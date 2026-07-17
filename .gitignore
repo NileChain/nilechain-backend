@@ -1,0 +1,54 @@
+## .NET
+bin/
+obj/
+[Bb]uild/
+[Ll]og/
+[Ll]ogs/
+*.userconfig
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+*.rsuser
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*~
+
+## User secrets & local config
+**/appsettings.*.local.json
+**/secrets.json
+*.pfx
+*.key
+
+## OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+## Test / coverage
+TestResults/
+[Cc]overage*/
+*.coverage
+*.coveragexml
+*.trx
+
+## NuGet
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+
+## Publish output
+publish/
+out/

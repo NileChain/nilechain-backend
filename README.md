@@ -1,15 +1,15 @@
-# AgriLink Backend
+# NileChain Backend
 
-ASP.NET Core 8 Web API for AgriLink — a platform that connects farms and factories with AI matching, contracts, payments, and market insights.
+ASP.NET Core 8 Web API for NileChain — a platform that connects farms and factories with AI matching, contracts, payments, and market insights.
 
 ## Solution structure
 
 | Project | Role |
 | --- | --- |
-| `AgriLink.API` | HTTP entry point, controllers, middleware, configuration |
-| `AgriLink.Application` | DTOs, services, validators, mappings |
-| `AgriLink.Domain` | Entities, enums, shared domain models |
-| `AgriLink.Infrastructure` | EF Core, repositories, external integrations |
+| `NileChain.API` | HTTP entry point, controllers, middleware, configuration |
+| `NileChain.Application` | DTOs, services, validators, mappings |
+| `NileChain.Domain` | Entities, enums, shared domain models |
+| `NileChain.Infrastructure` | EF Core, repositories, external integrations |
 
 See [docs/ProjectStructure.md](docs/ProjectStructure.md) for the full blueprint and planned API endpoints.
 
@@ -23,9 +23,9 @@ See [docs/ProjectStructure.md](docs/ProjectStructure.md) for the full blueprint 
 ```bash
 git clone <your-repo-url>
 cd backend
-dotnet restore AgriLink.slnx
-dotnet build AgriLink.slnx
-dotnet run --project AgriLink.API
+dotnet restore NileChain.slnx
+dotnet build NileChain.slnx
+dotnet run --project NileChain.API
 ```
 
 By default the API listens on:
@@ -35,7 +35,7 @@ By default the API listens on:
 
 ## Configuration
 
-Edit `AgriLink.API/appsettings.json` (or use [user secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets) in Development):
+Edit `NileChain.API/appsettings.json` (or use [user secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets) in Development):
 
 | Section | Purpose |
 | --- | --- |
@@ -48,10 +48,10 @@ Edit `AgriLink.API/appsettings.json` (or use [user secrets](https://learn.micros
 **Do not commit real secrets.** Keep placeholders in `appsettings.json` and override locally via user secrets or environment variables:
 
 ```bash
-cd AgriLink.API
+cd NileChain.API
 dotnet user-secrets init
 dotnet user-secrets set "Jwt:Secret" "your-long-random-secret"
-dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=.;Database=AgriLinkDb;Trusted_Connection=True;TrustServerCertificate=True"
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=.;Database=NileChainDb;Trusted_Connection=True;TrustServerCertificate=True"
 ```
 
 ## Tech stack

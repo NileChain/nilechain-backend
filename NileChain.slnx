@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="NileChain.API/NileChain.API.csproj" />
+  <Project Path="NileChain.Application/NileChain.Application.csproj" />
+  <Project Path="NileChain.Domain/NileChain.Domain.csproj" />
+  <Project Path="NileChain.Infrastructure/NileChain.Infrastructure.csproj" />
+</Solution>

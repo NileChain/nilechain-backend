@@ -1,7 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\AgriLink.Domain\AgriLink.Domain.csproj" />
+    <ProjectReference Include="..\NileChain.Application\NileChain.Application.csproj" />
+    <ProjectReference Include="..\NileChain.Domain\NileChain.Domain.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

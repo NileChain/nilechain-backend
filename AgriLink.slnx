@@ -1,6 +1,0 @@
-<Solution>
-  <Project Path="AgriLink.API/AgriLink.API.csproj" />
-  <Project Path="AgriLink.Application/AgriLink.Application.csproj" />
-  <Project Path="AgriLink.Domain/AgriLink.Domain.csproj" />
-  <Project Path="AgriLink.Infrastructure/AgriLink.Infrastructure.csproj" />
-</Solution>

@@ -1,51 +1,59 @@
 # NileChain Backend
 
-ASP.NET Core 8 Web API for NileChain — a platform that connects farms and factories with AI matching, contracts, payments, and market insights.
+ASP.NET Core 10 Web API for **NileChain** — a platform that connects farms and factories with AI matching, contracts, payments, and market insights.
 
 ## Solution structure
 
 | Project | Role |
 | --- | --- |
-| `NileChain.API` | HTTP entry point, controllers, middleware, configuration |
+| `NileChain.API` | HTTP entry point, middleware, configuration, Swagger |
 | `NileChain.Application` | DTOs, services, validators, mappings |
 | `NileChain.Domain` | Entities, enums, shared domain models |
 | `NileChain.Infrastructure` | EF Core, repositories, external integrations |
+
+Solution file: `NileChain.slnx`
 
 See [docs/ProjectStructure.md](docs/ProjectStructure.md) for the full blueprint and planned API endpoints.
 
 ## Prerequisites
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- SQL Server (LocalDB, Express, or full) for the default connection string
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- SQL Server (LocalDB, Express, or full) when you wire up the database
 
 ## Getting started
 
 ```bash
-git clone <your-repo-url>
-cd backend
+git clone https://github.com/<your-user>/nilechain.git
+cd nilechain
 dotnet restore NileChain.slnx
 dotnet build NileChain.slnx
 dotnet run --project NileChain.API
 ```
 
-By default the API listens on:
+### URLs
 
-- `https://localhost:7018`
-- `http://localhost:5190`
+| Resource | URL |
+| --- | --- |
+| HTTP | http://localhost:5190 |
+| HTTPS | https://localhost:7018 |
+| Swagger UI | http://localhost:5190/swagger |
+| OpenAPI JSON | http://localhost:5190/swagger/v1/swagger.json |
+
+Swagger is enabled in the **Development** environment. Running the `http` or `https` launch profile opens Swagger UI in the browser.
 
 ## Configuration
 
-Edit `NileChain.API/appsettings.json` (or use [user secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets) in Development):
+Edit `NileChain.API/appsettings.json`, or use [user secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets) for local overrides:
 
 | Section | Purpose |
 | --- | --- |
-| `ConnectionStrings:DefaultConnection` | SQL Server connection |
+| `ConnectionStrings:DefaultConnection` | SQL Server connection (`NileChainDb`) |
 | `Jwt` | Issuer, audience, secret, token lifetimes |
 | `Paymob` | Payment gateway credentials |
 | `AiServices` | AI / RAG provider settings |
 | `Email` / `Sms` | Notification providers |
 
-**Do not commit real secrets.** Keep placeholders in `appsettings.json` and override locally via user secrets or environment variables:
+**Do not commit real secrets.** Keep placeholders in `appsettings.json` and override locally:
 
 ```bash
 cd NileChain.API
@@ -56,6 +64,11 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=.;Database
 
 ## Tech stack
 
-- .NET 8 / ASP.NET Core Web API
-- Layered architecture (API → Application → Domain / Infrastructure)
+- .NET 10 / ASP.NET Core Web API
+- Swagger / OpenAPI via Swashbuckle.AspNetCore
+- Layered architecture: API → Application → Domain / Infrastructure
 - Planned: EF Core, JWT auth, Paymob, AI matching & assistant
+
+## Current status
+
+Scaffolded layered solution with configuration placeholders and Swagger. Controllers, domain entities, and infrastructure implementations from the project blueprint are still to be built — see [docs/ProjectStructure.md](docs/ProjectStructure.md).

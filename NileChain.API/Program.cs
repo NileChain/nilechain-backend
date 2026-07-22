@@ -1,37 +1,51 @@
+using NileChain.API.Extensions;
+using NileChain.Application;
+using NileChain.Domain.Identity;
+using NileChain.Infrastructure;
+using NileChain.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Identity;
+using Scalar.AspNetCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddControllers();
-
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
+builder.Services.AddAuthorization();
+builder.Services.AddOpenApi();
+builder.Services.AddCors(options =>
 {
-    options.SwaggerDoc("v1", new Microsoft.OpenApi.OpenApiInfo
+    options.AddPolicy("AngularPolicy", policy =>
     {
-        Title = "NileChain API",
-        Version = "v1",
-        Description = "Web API for NileChain — connecting farms and factories with AI matching, contracts, payments, and market insights."
+        policy.WithOrigins("http://localhost:4200")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
     });
 });
-
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+app.UseGlobalExceptionMiddleware();
 
-if (app.Environment.IsDevelopment())
+using (var scope = app.Services.CreateScope())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI(options =>
-    {
-        options.SwaggerEndpoint("/swagger/v1/swagger.json", "NileChain API v1");
-    });
+    var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>();
+    var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+    await IdentitySeeder.SeedAsync(roleManager, userManager);
 }
 
+app.MapOpenApi();
+app.MapScalarApiReference(options =>
+{
+    options
+        .WithTitle("NileChain API")
+        .WithDefaultHttpClient(ScalarTarget.CSharp, ScalarClient.HttpClient);
+});
 app.UseHttpsRedirection();
+app.UseCors("AngularPolicy");
 
+app.UseAuthentication();
 app.UseAuthorization();
-
 app.MapControllers();
 
 app.Run();

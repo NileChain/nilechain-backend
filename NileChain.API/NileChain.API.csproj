@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NileChain.Application\NileChain.Application.csproj" />
     <ProjectReference Include="..\NileChain.Infrastructure\NileChain.Infrastructure.csproj" />
+    <ProjectReference Include="..\NileChain.AI\NileChain.AI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

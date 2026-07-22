@@ -1,3 +1,4 @@
+using NileChain.AI;
 using NileChain.API.Extensions;
 using NileChain.Application;
 using NileChain.Domain.Identity;
@@ -10,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplication(builder.Configuration);
+builder.Services.AddNileChainAI(builder.Configuration);
 builder.Services.AddControllers();
 builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();

@@ -28,6 +28,9 @@ artifacts/
 **/secrets.json
 *.pfx
 *.key
+.env
+.env.*
+!.env.example
 
 ## OS
 .DS_Store

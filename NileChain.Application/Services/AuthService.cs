@@ -25,6 +25,7 @@ namespace NileChain.Application.Services
         private readonly ITemplateRenderer _templateRenderer;
         private readonly IUnitOfWork _unitOfWork;
         private readonly IFarmService _farmService;
+        private readonly IFactoryService _factoryService;
         private readonly AppOptions _appOptions;
 
         public AuthService(
@@ -36,6 +37,7 @@ namespace NileChain.Application.Services
             IEmailService emailService,
             ITemplateRenderer templateRenderer,
             IFarmService farmService,
+            IFactoryService factoryService,
             IOptions<AppOptions> appOptions)
         {
             _userManager = userManager;
@@ -46,6 +48,7 @@ namespace NileChain.Application.Services
             _emailService = emailService;
             _templateRenderer = templateRenderer;
             _farmService = farmService;
+            _factoryService = factoryService;
             _appOptions = appOptions.Value;
         }
 
@@ -112,6 +115,13 @@ namespace NileChain.Application.Services
                     request.Name!,
                     request.Governorate!,
                     request.SizeInFeddans!.Value);
+            }
+            else if (role == "Factory")
+            {
+                await _factoryService.RegisterFactoryAsync(
+                    user.Id,
+                    request.Name!,
+                    request.Governorate!);
             }
 
             var token =
@@ -203,6 +213,9 @@ namespace NileChain.Application.Services
 
             if (user is null)
                 return Result<AuthResponse>.Failure(AuthErrors.InvalidCredentials);
+
+            if (await _userManager.IsLockedOutAsync(user))
+                return Result<AuthResponse>.Failure(AuthErrors.AccountLocked);
 
             var isPasswordValid =
                 await _userManager.CheckPasswordAsync(user, request.Password);

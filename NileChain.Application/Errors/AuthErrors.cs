@@ -63,5 +63,10 @@ namespace NileChain.Application.Errors
     new(
         "Auth.PhoneUpdateFailed",
         "Failed to update phone number.");
+
+        public static readonly Error AccountLocked =
+            new(
+                "Auth.AccountLocked",
+                "Your account has been blocked. Please contact support.");
     }
 }

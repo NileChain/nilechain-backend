@@ -80,6 +80,7 @@ public static class DependencyInjection
 
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped<IFarmRepository, FarmRepository>();
+        services.AddScoped<IFactoryRepository, FactoryRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<ITemplateRenderer, TemplateRendererService>();
         services.AddScoped<ITokenService, JwtTokenService>();

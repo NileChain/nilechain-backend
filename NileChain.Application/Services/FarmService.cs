@@ -14,6 +14,8 @@ public class FarmService : IFarmService
     private readonly IFarmRepository _farmRepository;
     private readonly IRepository<CropType> _cropTypeRepository;
     private readonly IRepository<FarmDocument> _farmDocumentRepository;
+    private readonly IRepository<FarmMatch> _farmMatchRepository;
+    private readonly IRepository<Message> _messageRepository;
     private readonly ICloudinaryService _cloudinaryService;
     private readonly IUnitOfWork _unitOfWork;
 
@@ -21,12 +23,16 @@ public class FarmService : IFarmService
         IFarmRepository farmRepository,
         IRepository<CropType> cropTypeRepository,
         IRepository<FarmDocument> farmDocumentRepository,
+        IRepository<FarmMatch> farmMatchRepository,
+        IRepository<Message> messageRepository,
         ICloudinaryService cloudinaryService,
         IUnitOfWork unitOfWork)
     {
         _farmRepository = farmRepository;
         _cropTypeRepository = cropTypeRepository;
         _farmDocumentRepository = farmDocumentRepository;
+        _farmMatchRepository = farmMatchRepository;
+        _messageRepository = messageRepository;
         _cloudinaryService = cloudinaryService;
         _unitOfWork = unitOfWork;
     }
@@ -296,6 +302,62 @@ public class FarmService : IFarmService
         return Result.Success();
     }
 
+    public async Task<Result<List<FarmMatchItemDto>>> GetMatchesAsync(Guid userId, string? status, Guid? cropTypeId)
+    {
+        var matches = await _farmRepository.GetFarmMatchesAsync(userId, status, cropTypeId);
+
+        var dtos = matches.Select(m => new FarmMatchItemDto
+        {
+            MatchId = m.MatchId,
+            FactoryName = m.SupplyRequest?.Factory?.Name ?? "Unknown",
+            FactoryLocation = m.SupplyRequest?.Factory?.Location,
+            FactoryIsVerified = m.SupplyRequest?.Factory?.IsVerified ?? false,
+            CropName = m.SupplyRequest?.CropType?.Name ?? "Unknown",
+            CropTypeId = m.SupplyRequest?.CropTypeId ?? Guid.Empty,
+            QuantityTons = m.SupplyRequest?.QuantityTons ?? 0,
+            PricePerTon = m.SupplyRequest?.PricePerTon,
+            DeliveryDate = m.SupplyRequest?.DeliveryDate,
+            QualitySpecs = m.SupplyRequest?.QualitySpecs,
+            MatchScore = m.MatchScore,
+            RiskScore = m.RiskScore,
+            Status = m.Status.ToString(),
+            CreatedAt = m.CreatedAt
+        }).ToList();
+
+        return Result<List<FarmMatchItemDto>>.Success(dtos);
+    }
+
+    public async Task<Result> RespondToMatchAsync(Guid userId, Guid matchId, string action)
+    {
+        var match = await _farmMatchRepository.GetByIdAsync(matchId);
+        if (match is null)
+            return Result.Failure(FarmErrors.MatchNotFound);
+
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null || match.FarmId != farm.FarmId)
+            return Result.Failure(FarmErrors.MatchNotFound);
+
+        if (match.Status != FarmMatchStatus.Proposed)
+            return Result.Failure(FarmErrors.MatchNotProposed);
+
+        switch (action.ToLowerInvariant())
+        {
+            case "accept":
+                match.Status = FarmMatchStatus.Accepted;
+                break;
+            case "reject":
+                match.Status = FarmMatchStatus.Rejected;
+                break;
+            default:
+                return Result.Failure(FarmErrors.InvalidAction);
+        }
+
+        _farmMatchRepository.Update(match);
+        await _unitOfWork.SaveChangesAsync();
+
+        return Result.Success();
+    }
+
     private FarmProfileResponse MapToProfileResponse(Farm farm)
     {
         return new FarmProfileResponse
@@ -344,6 +406,145 @@ public class FarmService : IFarmService
         if (farm.FarmDocuments.Count > 0) fields++;
 
         return (int)Math.Round((fields / 8.0) * 100);
+    }
+
+    public async Task<Result<List<FarmContractDto>>> GetContractsAsync(Guid userId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<List<FarmContractDto>>.Failure(FarmErrors.FarmNotFound);
+
+        var contracts = await _farmRepository.GetFarmContractsAsync(userId);
+
+        var dtos = contracts.Select(c => new FarmContractDto
+        {
+            ContractId = c.ContractId,
+            MatchId = c.MatchId,
+            FactoryName = c.FarmMatch.SupplyRequest?.Factory?.Name ?? "Unknown",
+            FactoryLocation = c.FarmMatch.SupplyRequest?.Factory?.Location,
+            CropName = c.FarmMatch.SupplyRequest?.CropType?.Name ?? "Unknown",
+            QuantityTons = c.FarmMatch.SupplyRequest?.QuantityTons ?? 0,
+            PricePerTon = c.FarmMatch.SupplyRequest?.PricePerTon,
+            DeliveryDate = c.FarmMatch.SupplyRequest?.DeliveryDate,
+            Status = c.Status.ToString(),
+            CreatedAt = c.CreatedAt,
+            SignedAt = c.SignedAt
+        }).ToList();
+
+        return Result<List<FarmContractDto>>.Success(dtos);
+    }
+
+    public async Task<Result<List<ConversationDto>>> GetConversationsAsync(Guid userId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<List<ConversationDto>>.Failure(FarmErrors.FarmNotFound);
+
+        var matches = await _farmRepository.GetConversationsAsync(userId);
+
+        var dtos = matches.Select(m =>
+        {
+            var lastMsg = m.Messages.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
+            return new ConversationDto
+            {
+                MatchId = m.MatchId,
+                FactoryName = m.SupplyRequest?.Factory?.Name ?? "Unknown",
+                CropName = m.SupplyRequest?.CropType?.Name,
+                LastMessage = lastMsg?.Content,
+                LastMessageAt = lastMsg?.CreatedAt,
+                UnreadCount = m.Messages.Count(x => !x.IsRead && x.ReceiverId == farm.UserId)
+            };
+        }).OrderByDescending(d => d.LastMessageAt).ToList();
+
+        return Result<List<ConversationDto>>.Success(dtos);
+    }
+
+    public async Task<Result<List<MessageDto>>> GetMessagesAsync(Guid userId, Guid matchId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<List<MessageDto>>.Failure(FarmErrors.FarmNotFound);
+
+        var messages = await _farmRepository.GetMessagesAsync(userId, matchId);
+        if (messages.Count == 0)
+            return Result<List<MessageDto>>.Failure(FarmErrors.ConversationNotFound);
+
+        var dtos = messages.Select(m => new MessageDto
+        {
+            MessageId = m.MessageId,
+            MatchId = m.MatchId,
+            SenderId = m.SenderId,
+            SenderName = m.Sender.UserName ?? m.Sender.Email ?? "Unknown",
+            Content = m.Content,
+            IsRead = m.IsRead,
+            CreatedAt = m.CreatedAt
+        }).ToList();
+
+        return Result<List<MessageDto>>.Success(dtos);
+    }
+
+    public async Task<Result> SendMessageAsync(Guid userId, Guid matchId, string content)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result.Failure(FarmErrors.FarmNotFound);
+
+        var matches = await _farmRepository.GetFarmMatchesAsync(userId, null, null);
+        var match = matches.FirstOrDefault(m => m.MatchId == matchId);
+        if (match is null)
+            return Result.Failure(FarmErrors.ConversationNotFound);
+
+        if (string.IsNullOrWhiteSpace(content))
+            return Result.Failure(FarmErrors.InvalidAction);
+
+        var receiverId = match.SupplyRequest?.Factory?.UserId ?? Guid.Empty;
+
+        var message = new Message
+        {
+            MessageId = Guid.NewGuid(),
+            MatchId = matchId,
+            SenderId = userId,
+            ReceiverId = receiverId,
+            Content = content,
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        await _messageRepository.AddAsync(message);
+        await _unitOfWork.SaveChangesAsync();
+
+        return Result.Success();
+    }
+
+    public async Task<Result<List<FarmNotificationDto>>> GetNotificationsAsync(Guid userId)
+    {
+        var notifications = await _farmRepository.GetNotificationsAsync(userId);
+
+        var dtos = notifications.Select(n => new FarmNotificationDto
+        {
+            NotificationId = n.NotificationId,
+            Title = n.Title,
+            Message = n.Message,
+            Type = n.Type,
+            IsRead = n.IsRead,
+            CreatedAt = n.CreatedAt
+        }).ToList();
+
+        return Result<List<FarmNotificationDto>>.Success(dtos);
+    }
+
+    public async Task<Result> MarkNotificationAsReadAsync(Guid userId, Guid notificationId)
+    {
+        var notifications = await _farmRepository.GetNotificationsAsync(userId);
+        var notification = notifications.FirstOrDefault(n => n.NotificationId == notificationId);
+
+        if (notification is null)
+            return Result.Failure(FarmErrors.NotificationNotFound);
+
+        notification.IsRead = true;
+        await _unitOfWork.SaveChangesAsync();
+
+        return Result.Success();
     }
 
     private static string FormatFileSize(long bytes)

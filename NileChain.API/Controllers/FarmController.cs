@@ -30,6 +30,17 @@ public class FarmController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpGet("dashboard")]
+    public async Task<IActionResult> GetDashboard()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.GetDashboardAsync(Guid.Parse(userId));
+        return result.ToActionResult();
+    }
+
     [HttpPut("profile")]
     public async Task<IActionResult> UpdateProfile(UpdateFarmProfileRequest request)
     {

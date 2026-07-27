@@ -18,6 +18,22 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
             .Include(f => f.FarmDocuments)
             .FirstOrDefaultAsync(f => f.UserId == userId);
 
+    public async Task<Farm?> GetFarmWithDashboardDataAsync(Guid userId) =>
+        await Context.Farm
+            .Include(f => f.User)
+            .Include(f => f.CropTypes)
+            .Include(f => f.FarmDocuments)
+            .Include(f => f.FarmCertifications)
+            .Include(f => f.FarmMatches)
+                .ThenInclude(fm => fm.SupplyRequest)
+                    .ThenInclude(sr => sr.Factory)
+            .Include(f => f.FarmMatches)
+                .ThenInclude(fm => fm.SupplyRequest)
+                    .ThenInclude(sr => sr.CropType)
+            .Include(f => f.FarmMatches)
+                .ThenInclude(fm => fm.Contract)
+            .FirstOrDefaultAsync(f => f.UserId == userId);
+
     public async Task<IReadOnlyList<Farm>> GetVerifiedFarmsByCropAsync(Guid cropTypeId, string? governorate) =>
         await Context.Farm
             .Where(f => f.IsVerified && f.CropTypes.Any(c => c.CropTypeId == cropTypeId))

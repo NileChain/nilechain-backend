@@ -8,6 +8,7 @@ public interface IFarmService
 {
     Task<Guid> RegisterFarmAsync(Guid userId, string name, string governorate, decimal sizeInFeddans);
     Task<Result<FarmProfileResponse>> GetProfileAsync(Guid userId);
+    Task<Result<FarmDashboardResponse>> GetDashboardAsync(Guid userId);
     Task<Result> UpdateProfileAsync(Guid userId, UpdateFarmProfileRequest request);
     Task<Result<FarmDocumentDto>> AddDocumentAsync(Guid userId, IFormFile file);
     Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId);

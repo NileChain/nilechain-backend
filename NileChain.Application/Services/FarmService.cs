@@ -31,6 +31,149 @@ public class FarmService : IFarmService
         _unitOfWork = unitOfWork;
     }
 
+    public async Task<Result<FarmDashboardResponse>> GetDashboardAsync(Guid userId)
+    {
+        var farm = await _farmRepository.GetFarmWithDashboardDataAsync(userId);
+        if (farm is null)
+            return Result<FarmDashboardResponse>.Failure(FarmErrors.FarmNotFound);
+
+        var matches = farm.FarmMatches ?? new List<FarmMatch>();
+        var activeMatches = matches
+            .Where(m => m.Status != FarmMatchStatus.Rejected && m.Status != FarmMatchStatus.Expired)
+            .ToList();
+
+        var completedContracts = matches
+            .Where(m => m.Contract is not null && m.Contract.Status == ContractStatus.Signed)
+            .ToList();
+
+        var totalContracts = matches
+            .Where(m => m.Contract is not null)
+            .ToList();
+
+        var profileCompletionPercent = CalculateCompletionPercent(farm);
+
+        var certificationPercent = farm.FarmCertifications?.Count > 0
+            ? Math.Min(farm.FarmCertifications.Count * 25m, 100)
+            : 0m;
+
+        var contractHistoryPercent = totalContracts.Count > 0
+            ? Math.Round((decimal)completedContracts.Count / totalContracts.Count * 100, 1)
+            : 0m;
+
+        var buyerRatingPercent = farm.RatingCount > 0
+            ? Math.Round(farm.AverageRating / 5m * 100, 1)
+            : 0m;
+
+        var improvementTips = new List<ImprovementTip>();
+
+        var missingFields = new List<string>();
+        if (string.IsNullOrWhiteSpace(farm.Name)) missingFields.Add("Farm name");
+        if (string.IsNullOrWhiteSpace(farm.Location)) missingFields.Add("Location");
+        if (string.IsNullOrWhiteSpace(farm.Governorate)) missingFields.Add("Governorate");
+        if (farm.SoilType is null) missingFields.Add("Soil type");
+        if (farm.SizeInFeddans is null || farm.SizeInFeddans <= 0) missingFields.Add("Farm size (feddan)");
+        if (string.IsNullOrWhiteSpace(farm.User.PhoneNumber)) missingFields.Add("Phone number");
+        if (farm.CropTypes.Count == 0) missingFields.Add("At least one crop type");
+        if (farm.FarmDocuments.Count == 0) missingFields.Add("At least one document (e.g. agricultural deed)");
+
+        if (profileCompletionPercent < 100)
+        {
+            var missing = string.Join(", ", missingFields);
+            var msg = profileCompletionPercent < 50
+                ? $"Complete your farm profile to boost this score. Missing: {missing}. Each of the 8 fields (name, location, governorate, soil type, size, phone, crop, document) adds 12.5% to this factor."
+                : $"Almost complete! Finish these last items to reach 100%: {missing}. Each field adds 12.5% to this factor.";
+            improvementTips.Add(new ImprovementTip
+            {
+                Category = "Profile Completion",
+                CurrentScore = profileCompletionPercent,
+                Severity = profileCompletionPercent < 50 ? "high" : profileCompletionPercent < 80 ? "medium" : "low",
+                Message = msg,
+                Icon = "person"
+            });
+        }
+
+        if (certificationPercent < 100)
+        {
+            var count = farm.FarmCertifications?.Count ?? 0;
+            var needed = count == 0 ? 4 : Math.Max(1, (int)Math.Ceiling((100 - certificationPercent) / 25m));
+            var msg = certificationPercent == 0
+                ? $"You have no certifications. Add GlobalGAP, Organic, Fair Trade, or other certs to your farm. Each certification adds 25 points to this factor — you need at least {needed} to max it out."
+                : $"You have {count} certification(s) ({certificationPercent}%). Add {needed} more to reach 100%. Each certification adds 25 points to this factor.";
+            improvementTips.Add(new ImprovementTip
+            {
+                Category = "Certifications",
+                CurrentScore = certificationPercent,
+                Severity = certificationPercent < 50 ? "high" : certificationPercent < 80 ? "medium" : "low",
+                Message = msg,
+                Icon = "verified"
+            });
+        }
+
+        if (contractHistoryPercent < 100)
+        {
+            var msg = contractHistoryPercent == 0
+                ? $"{completedContracts.Count} of {totalContracts.Count} contracts completed. Accept matches, fulfill deliveries on time, and get contracts marked complete. Every signed contract lifts this ratio."
+                : $"{completedContracts.Count} of {totalContracts.Count} contracts completed ({contractHistoryPercent}%). To raise this, fulfill every accepted match and ensure contracts reach 'Signed' status.";
+            improvementTips.Add(new ImprovementTip
+            {
+                Category = "Contract History",
+                CurrentScore = contractHistoryPercent,
+                Severity = contractHistoryPercent < 50 ? "high" : contractHistoryPercent < 80 ? "medium" : "low",
+                Message = msg,
+                Icon = "assignment_turned_in"
+            });
+        }
+
+        if (buyerRatingPercent < 100)
+        {
+            var msg = buyerRatingPercent == 0
+                ? $"No ratings yet ({farm.RatingCount} reviews). After a delivery, ask the factory buyer to rate your farm. Each 5-star review pulls your average toward 100%."
+                : $"Your rating is {farm.AverageRating:F1}/5.0 across {farm.RatingCount} review(s). Focus on product quality, on-time delivery, and clear communication to earn higher scores from buyers.";
+            improvementTips.Add(new ImprovementTip
+            {
+                Category = "Buyer Ratings",
+                CurrentScore = buyerRatingPercent,
+                Severity = buyerRatingPercent < 50 ? "high" : buyerRatingPercent < 80 ? "medium" : "low",
+                Message = msg,
+                Icon = "star"
+            });
+        }
+
+        var recentMatches = matches
+            .OrderByDescending(m => m.CreatedAt)
+            .Take(5)
+            .Select(m => new RecentMatchItem
+            {
+                MatchId = m.MatchId,
+                FactoryName = m.SupplyRequest?.Factory?.Name ?? "Unknown",
+                CropName = m.SupplyRequest?.CropType?.Name ?? "Unknown",
+                QuantityTons = m.SupplyRequest?.QuantityTons ?? 0,
+                MatchScore = m.MatchScore,
+                Status = m.Status.ToString()
+            })
+            .ToList();
+
+        var response = new FarmDashboardResponse
+        {
+            RiskScore = farm.RiskScore,
+            ActiveMatchesCount = activeMatches.Count,
+            CompletedContractsCount = completedContracts.Count,
+            AverageRating = farm.AverageRating,
+            RatingCount = farm.RatingCount,
+            RiskBreakdown = new List<RiskBreakdownItem>
+            {
+                new() { Label = "Profile Completion", Percentage = profileCompletionPercent },
+                new() { Label = "Certifications", Percentage = certificationPercent },
+                new() { Label = "Contract History", Percentage = contractHistoryPercent },
+                new() { Label = "Buyer Ratings", Percentage = buyerRatingPercent }
+            },
+            RecentMatches = recentMatches,
+            ImprovementTips = improvementTips
+        };
+
+        return Result<FarmDashboardResponse>.Success(response);
+    }
+
     public async Task<Guid> RegisterFarmAsync(Guid userId, string name, string governorate, decimal sizeInFeddans)
     {
         var farm = new Farm

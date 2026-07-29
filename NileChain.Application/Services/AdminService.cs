@@ -31,7 +31,7 @@ namespace NileChain.Application.Services
             _unitOfWork = unitOfWork;
         }
 
-        public async Task<PagedResult<UserListItem>> GetUsersAsync(string? role, string? search, int page, int pageSize)
+        public async Task<PagedResult<UserListItem>> GetUsersAsync(string? role, bool? isVerified, string? search, int page, int pageSize)
         {
             var query = _userManager.Users.AsQueryable();
 
@@ -40,6 +40,11 @@ namespace NileChain.Application.Services
                 var usersInRole = await _userManager.GetUsersInRoleAsync(role);
                 var userIds = usersInRole.Select(u => u.Id).ToHashSet();
                 query = query.Where(u => userIds.Contains(u.Id));
+            }
+
+            if (isVerified.HasValue)
+            {
+                query = query.Where(u => u.IsVerified == isVerified.Value);
             }
 
             if (!string.IsNullOrWhiteSpace(search))
@@ -75,6 +80,7 @@ namespace NileChain.Application.Services
                     Role = roleName,
                     IsVerified = user.IsVerified,
                     IsBlocked = isBlocked,
+                    IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt,
                     FarmName = user.Farm?.Name,
                     FactoryName = user.Factory?.Name
@@ -373,6 +379,36 @@ namespace NileChain.Application.Services
                 return Result.Failure(AdminErrors.UserNotBlocked);
 
             await _userManager.SetLockoutEndDateAsync(user, null);
+            return Result.Success();
+        }
+
+        public async Task<Result> DeactivateUserAsync(Guid userId)
+        {
+            var user = await _userManager.FindByIdAsync(userId.ToString());
+            if (user is null)
+                return Result.Failure(AdminErrors.UserNotFound);
+
+            if (!user.IsActive)
+                return Result.Failure(AdminErrors.UserAlreadyDeactivated);
+
+            user.IsActive = false;
+            await _userManager.UpdateAsync(user);
+
+            return Result.Success();
+        }
+
+        public async Task<Result> ReactivateUserAsync(Guid userId)
+        {
+            var user = await _userManager.FindByIdAsync(userId.ToString());
+            if (user is null)
+                return Result.Failure(AdminErrors.UserNotFound);
+
+            if (user.IsActive)
+                return Result.Failure(AdminErrors.UserNotDeactivated);
+
+            user.IsActive = true;
+            await _userManager.UpdateAsync(user);
+
             return Result.Success();
         }
     }

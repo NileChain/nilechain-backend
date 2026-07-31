@@ -250,6 +250,16 @@ public class FarmService : IFarmService
         return Result<FarmDocumentDto>.Success(dto);
     }
 
+    public async Task<Result<List<FarmDocumentDto>>> GetDocumentsAsync(Guid userId)
+    {
+        var farm = await _farmRepository.GetFarmWithDetailsAsync(userId);
+        if (farm is null)
+            return Result<List<FarmDocumentDto>>.Failure(FarmErrors.FarmNotFound);
+
+        var dtos = farm.FarmDocuments.Select(MapToDocumentDto).ToList();
+        return Result<List<FarmDocumentDto>>.Success(dtos);
+    }
+
     public async Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId)
     {
         var farm = await _farmRepository.GetByUserIdAsync(userId);

@@ -20,11 +20,12 @@ namespace NileChain.API.Controllers
         [HttpGet("users")]
         public async Task<IActionResult> GetUsers(
             [FromQuery] string? role,
+            [FromQuery] bool? isVerified,
             [FromQuery] string? search,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 10)
         {
-            var result = await _adminService.GetUsersAsync(role, search, page, pageSize);
+            var result = await _adminService.GetUsersAsync(role, isVerified, search, page, pageSize);
             return Ok(result);
         }
 
@@ -80,6 +81,26 @@ namespace NileChain.API.Controllers
         public async Task<IActionResult> UnblockUser(Guid id)
         {
             var result = await _adminService.UnblockUserAsync(id);
+            if (result.IsFailure)
+                return BadRequest(new { error = result.Error?.Description });
+
+            return Ok();
+        }
+
+        [HttpPut("users/{id:guid}/deactivate")]
+        public async Task<IActionResult> DeactivateUser(Guid id)
+        {
+            var result = await _adminService.DeactivateUserAsync(id);
+            if (result.IsFailure)
+                return BadRequest(new { error = result.Error?.Description });
+
+            return Ok();
+        }
+
+        [HttpPut("users/{id:guid}/reactivate")]
+        public async Task<IActionResult> ReactivateUser(Guid id)
+        {
+            var result = await _adminService.ReactivateUserAsync(id);
             if (result.IsFailure)
                 return BadRequest(new { error = result.Error?.Description });
 

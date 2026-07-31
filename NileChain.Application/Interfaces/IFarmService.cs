@@ -11,6 +11,7 @@ public interface IFarmService
     Task<Result<FarmDashboardResponse>> GetDashboardAsync(Guid userId);
     Task<Result> UpdateProfileAsync(Guid userId, UpdateFarmProfileRequest request);
     Task<Result<FarmDocumentDto>> AddDocumentAsync(Guid userId, IFormFile file);
+    Task<Result<List<FarmDocumentDto>>> GetDocumentsAsync(Guid userId);
     Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId);
     Task<Result> AddCropAsync(Guid userId, Guid cropTypeId);
     Task<Result> DeleteCropAsync(Guid userId, Guid cropTypeId);

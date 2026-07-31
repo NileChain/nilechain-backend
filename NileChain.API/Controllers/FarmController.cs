@@ -52,6 +52,17 @@ public class FarmController : ControllerBase
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
+    [HttpGet("documents")]
+    public async Task<IActionResult> GetDocuments()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.GetDocumentsAsync(Guid.Parse(userId));
+        return result.ToActionResult();
+    }
+
     [HttpPost("documents")]
     public async Task<IActionResult> AddDocument(IFormFile file)
     {

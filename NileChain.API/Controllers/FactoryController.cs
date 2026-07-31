@@ -40,4 +40,15 @@ public class FactoryController : ControllerBase
         var result = await _factoryService.UpdateProfileAsync(Guid.Parse(userId), request);
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
+
+    [HttpGet("requests/{requestId:guid}/matches")]
+    public async Task<IActionResult> GetRequestMatches(Guid requestId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetRequestMatchesAsync(Guid.Parse(userId), requestId);
+        return result.ToActionResult();
+    }
 }

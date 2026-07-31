@@ -8,4 +8,5 @@ public interface IFactoryService
     Task<Guid> RegisterFactoryAsync(Guid userId, string name, string governorate);
     Task<Result<FactoryProfileResponse>> GetProfileAsync(Guid userId);
     Task<Result> UpdateProfileAsync(Guid userId, UpdateFactoryProfileRequest request);
+    Task<Result<List<FactoryMatchItemDto>>> GetRequestMatchesAsync(Guid userId, Guid requestId);
 }

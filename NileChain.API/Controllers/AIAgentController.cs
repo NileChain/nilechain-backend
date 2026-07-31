@@ -37,12 +37,19 @@ public class AIAgentController : ControllerBase
     public async Task<IActionResult> GenerateContract(
         [FromBody] GenerateContractRequest request)
     {
-        var contract = await _aiService.GenerateContractAsync(
+        var result = await _aiService.GenerateContractAsync(
             request.AgentRequest,
             request.SelectedFarm,
             request.FactoryName);
 
-        return Ok(new { contractText = contract });
+        if (!result.Success)
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { code = result.ErrorCode, message = result.ErrorMessage });
+        }
+
+        return Ok(new { contractText = result.ContractText });
     }
 }
 

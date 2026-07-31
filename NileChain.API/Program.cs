@@ -34,6 +34,12 @@ using (var scope = app.Services.CreateScope())
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>();
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
     await IdentitySeeder.SeedAsync(roleManager, userManager);
+
+    if (app.Environment.IsDevelopment())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<NileChainDbContext>();
+        await DevelopmentDataSeeder.SeedAsync(db, userManager);
+    }
 }
 
 app.MapOpenApi();

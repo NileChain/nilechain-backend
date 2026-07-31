@@ -59,6 +59,11 @@ namespace NileChain.Application.Errors
         "Auth.ResetPasswordFailed",
         "Failed to reset password.");
 
+        public static readonly Error InvalidResetToken =
+            new(
+                "Auth.InvalidResetToken",
+                "Invalid or malformed password reset token.");
+
         public static readonly Error PhoneUpdateFailed =
     new(
         "Auth.PhoneUpdateFailed",

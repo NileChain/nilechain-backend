@@ -6,10 +6,14 @@ namespace NileChain.AI.Services;
 public class AIOrchestrationService
 {
     private readonly OrchestratorAgent _orchestrator;
+    private readonly Lazy<ContractAgent> _contractAgent;
 
-    public AIOrchestrationService(OrchestratorAgent orchestrator)
+    public AIOrchestrationService(
+        OrchestratorAgent orchestrator,
+        Lazy<ContractAgent> contractAgent)
     {
         _orchestrator = orchestrator;
+        _contractAgent = contractAgent;
     }
 
     public Task<AgentResponse> ProcessSupplyRequestAsync(AgentRequest request)
@@ -17,11 +21,12 @@ public class AIOrchestrationService
         return _orchestrator.RunAsync(request);
     }
 
-    public Task<string> GenerateContractAsync(
+    public Task<ContractGenerationResult> GenerateContractAsync(
         AgentRequest request,
         MatchResult selectedFarm,
         string factoryName)
     {
-        return _orchestrator.GenerateContractAsync(request, selectedFarm, factoryName);
+        // Resolves ContractAgent only for contract generation (matching remains OpenAI-free).
+        return _contractAgent.Value.GenerateContractAsync(request, selectedFarm, factoryName);
     }
 }

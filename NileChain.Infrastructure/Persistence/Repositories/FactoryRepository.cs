@@ -15,4 +15,14 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
         await Context.Factory
             .Include(f => f.User)
             .FirstOrDefaultAsync(f => f.UserId == userId);
+
+    public async Task<SupplyRequest?> GetSupplyRequestByIdAsync(Guid requestId) =>
+        await Context.SupplyRequests.FirstOrDefaultAsync(sr => sr.RequestId == requestId);
+
+    public async Task<List<FarmMatch>> GetMatchesByRequestIdAsync(Guid factoryId, Guid requestId) =>
+        await Context.FarmMatches
+            .Include(fm => fm.Farm)
+            .Where(fm => fm.RequestId == requestId && fm.SupplyRequest.FactoryId == factoryId)
+            .OrderByDescending(fm => fm.MatchScore)
+            .ToListAsync();
 }

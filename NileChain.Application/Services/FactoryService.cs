@@ -62,6 +62,39 @@ public class FactoryService : IFactoryService
         return Result.Success();
     }
 
+    public async Task<Result<List<FactoryMatchItemDto>>> GetRequestMatchesAsync(Guid userId, Guid requestId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<List<FactoryMatchItemDto>>.Failure(FactoryErrors.FactoryNotFound);
+
+        var supplyRequest = await _factoryRepository.GetSupplyRequestByIdAsync(requestId);
+        if (supplyRequest is null)
+            return Result<List<FactoryMatchItemDto>>.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        if (supplyRequest.FactoryId != factory.FactoryId)
+            return Result<List<FactoryMatchItemDto>>.Failure(FactoryErrors.UnauthorizedAccess);
+
+        var matches = await _factoryRepository.GetMatchesByRequestIdAsync(factory.FactoryId, requestId);
+
+        var dtos = matches.Select(m => new FactoryMatchItemDto
+        {
+            MatchId = m.MatchId,
+            FarmId = m.FarmId,
+            FarmName = m.Farm?.Name ?? "Unknown",
+            FarmLocation = m.Farm?.Location,
+            FarmGovernorate = m.Farm?.Governorate,
+            FarmIsVerified = m.Farm?.IsVerified ?? false,
+            FarmAverageRating = m.Farm?.AverageRating ?? 0,
+            MatchScore = m.MatchScore,
+            RiskScore = m.RiskScore,
+            Status = m.Status.ToString(),
+            CreatedAt = m.CreatedAt
+        }).ToList();
+
+        return Result<List<FactoryMatchItemDto>>.Success(dtos);
+    }
+
     private static FactoryProfileResponse MapToProfileResponse(Factory factory)
     {
         return new FactoryProfileResponse

@@ -12,7 +12,11 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddNileChainAI(builder.Configuration);
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<NileChain.API.Filters.FluentValidationActionFilter>();
+});
+builder.Services.AddScoped<NileChain.API.Filters.FluentValidationActionFilter>();
 builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
 builder.Services.AddCors(options =>

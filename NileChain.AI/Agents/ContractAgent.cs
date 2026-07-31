@@ -7,25 +7,32 @@ namespace NileChain.AI.Agents;
 
 public class ContractAgent
 {
-    private readonly Kernel _kernel;
+    private readonly OpenAiKernelProvider _kernelProvider;
     private readonly ContractPlugin _plugin;
     private readonly RagPipeline _ragPipeline;
 
     public ContractAgent(
-        Kernel kernel,
+        OpenAiKernelProvider kernelProvider,
         ContractPlugin plugin,
         RagPipeline ragPipeline)
     {
-        _kernel = kernel;
+        _kernelProvider = kernelProvider;
         _plugin = plugin;
         _ragPipeline = ragPipeline;
     }
 
-    public async Task<string> GenerateContractAsync(
+    public async Task<ContractGenerationResult> GenerateContractAsync(
         AgentRequest request,
         MatchResult selectedFarm,
         string factoryName)
     {
+        if (!_kernelProvider.IsAvailable)
+        {
+            return ContractGenerationResult.Unavailable(
+                _kernelProvider.UnavailableReason
+                ?? "AI service is unavailable. OpenAI is not configured.");
+        }
+
         var ragContext = await _ragPipeline.GetCombinedContextAsync(request.CropType);
 
         var prompt = _plugin.BuildContractPrompt(
@@ -38,7 +45,7 @@ public class ContractAgent
             qualitySpecs: request.QualitySpecs,
             ragContext: ragContext);
 
-        var result = await _kernel.InvokePromptAsync(prompt);
-        return result.ToString();
+        var result = await _kernelProvider.Kernel!.InvokePromptAsync(prompt);
+        return ContractGenerationResult.Ok(result.ToString());
     }
 }

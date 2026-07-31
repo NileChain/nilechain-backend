@@ -4,18 +4,20 @@ namespace NileChain.AI.Agents;
 
 public class OrchestratorAgent
 {
+    /// <summary>
+    /// Must match MatchingPlugin risk contribution: (RiskScore / 100) * 20.
+    /// </summary>
+    private const decimal RiskMatchContributionMax = 20m;
+
     private readonly MatchingAgent _matchingAgent;
     private readonly RiskAgent _riskAgent;
-    private readonly ContractAgent _contractAgent;
 
     public OrchestratorAgent(
         MatchingAgent matchingAgent,
-        RiskAgent riskAgent,
-        ContractAgent contractAgent)
+        RiskAgent riskAgent)
     {
         _matchingAgent = matchingAgent;
         _riskAgent = riskAgent;
-        _contractAgent = contractAgent;
     }
 
     public async Task<AgentResponse> RunAsync(AgentRequest request)
@@ -47,6 +49,16 @@ public class OrchestratorAgent
                 if (IsFailedRiskReport(report))
                     continue;
 
+                // MatchScore already includes a risk contribution from MatchingPlugin
+                // based on the previous Farm.RiskScore. Replace that portion with the
+                // freshly calculated OverallScore so final ranking uses updated risk.
+                var previousRiskContribution =
+                    (match.RiskScore / 100m) * RiskMatchContributionMax;
+                var updatedRiskContribution =
+                    (report.OverallScore / 100m) * RiskMatchContributionMax;
+
+                match.MatchScore =
+                    match.MatchScore - previousRiskContribution + updatedRiskContribution;
                 match.RiskScore = report.OverallScore;
                 match.RiskLevel = report.RiskLevel;
             }
@@ -72,14 +84,6 @@ public class OrchestratorAgent
                 ErrorMessage = ex.Message
             };
         }
-    }
-
-    public Task<string> GenerateContractAsync(
-        AgentRequest request,
-        MatchResult selectedFarm,
-        string factoryName)
-    {
-        return _contractAgent.GenerateContractAsync(request, selectedFarm, factoryName);
     }
 
     private static bool IsFailedRiskReport(RiskReport report) =>

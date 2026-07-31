@@ -21,15 +21,18 @@ public static class DependencyInjection
 
             if (string.IsNullOrWhiteSpace(key))
             {
-                throw new InvalidOperationException(
-                    "OpenAI API key not found. Set OPENAI_KEY or OpenAI:ApiKey.");
+                return new OpenAiKernelProvider(
+                    kernel: null,
+                    unavailableReason: "AI service is unavailable. Set OPENAI_KEY or OpenAI:ApiKey.");
             }
 
-            return Kernel.CreateBuilder()
+            var kernel = Kernel.CreateBuilder()
                 .AddOpenAIChatCompletion(
                     configuration["OpenAI:Model"] ?? "gpt-4o",
                     key)
                 .Build();
+
+            return new OpenAiKernelProvider(kernel);
         });
 
         services.AddHttpClient<ChromaService>(client =>
@@ -47,6 +50,9 @@ public static class DependencyInjection
         services.AddScoped<MatchingAgent>();
         services.AddScoped<RiskAgent>();
         services.AddScoped<ContractAgent>();
+        // Lazy so matching (/agent/run) does not resolve ContractAgent.
+        services.AddScoped(sp =>
+            new Lazy<ContractAgent>(() => sp.GetRequiredService<ContractAgent>()));
         services.AddScoped<OrchestratorAgent>();
 
         services.AddScoped<AIOrchestrationService>();

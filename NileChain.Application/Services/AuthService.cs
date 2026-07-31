@@ -469,9 +469,16 @@ namespace NileChain.Application.Services
             if (user is null)
                 return Result.Failure(AuthErrors.UserNotFound);
 
-            var decodedToken =
-                Encoding.UTF8.GetString(
+            string decodedToken;
+            try
+            {
+                decodedToken = Encoding.UTF8.GetString(
                     WebEncoders.Base64UrlDecode(request.Token));
+            }
+            catch (FormatException)
+            {
+                return Result.Failure(AuthErrors.InvalidResetToken);
+            }
 
             var result =
                 await _userManager.ResetPasswordAsync(

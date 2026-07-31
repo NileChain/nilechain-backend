@@ -23,17 +23,54 @@ public class RagPipeline
             nResults: 2);
     }
 
-    public async Task<string> GetCombinedContextAsync(string cropType)
+    public async Task<string> GetCombinedContextAsync(string query)
     {
-        var qualityContext = await GetQualityStandardsAsync(cropType);
-        var contractContext = await GetContractTemplateAsync(cropType);
+        if (string.IsNullOrWhiteSpace(query))
+            return string.Empty;
 
-        return $"""
-            معايير الجودة:
-            {qualityContext}
+        try
+        {
+            var qualityTask = _chromaService.QueryAsync(
+                $"معايير جودة محصول {query} للاستخدام الصناعي",
+                nResults: 2);
 
-            البنود القانونية:
-            {contractContext}
-            """;
+            var contractTask = _chromaService.QueryAsync(
+                $"قالب عقد توريد {query} بنود قانونية",
+                nResults: 2);
+
+            await Task.WhenAll(qualityTask, contractTask);
+
+            var qualityResults = await qualityTask;
+            var contractResults = await contractTask;
+
+            var sections = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(qualityResults))
+            {
+                sections.Add(
+                    "=== QUALITY STANDARDS ==="
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + qualityResults.Trim());
+            }
+
+            if (!string.IsNullOrWhiteSpace(contractResults))
+            {
+                sections.Add(
+                    "=== CONTRACT TEMPLATE ==="
+                    + Environment.NewLine
+                    + Environment.NewLine
+                    + contractResults.Trim());
+            }
+
+            if (sections.Count == 0)
+                return string.Empty;
+
+            return string.Join(Environment.NewLine + Environment.NewLine, sections);
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 }

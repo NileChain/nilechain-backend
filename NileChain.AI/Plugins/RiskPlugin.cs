@@ -10,6 +10,25 @@ namespace NileChain.AI.Plugins;
 
 public class RiskPlugin
 {
+    private const decimal ProfileMaxPoints = 25m;
+    private const decimal CertificationMaxPoints = 25m;
+    private const decimal ContractMaxPoints = 30m;
+    private const decimal RatingMaxPoints = 20m;
+    private const decimal MaxOverallScore = 100m;
+
+    // Profile field weights (sum = 25). Only fields that exist on Farm / ApplicationUser / FarmDocument.
+    private const decimal ProfileNamePoints = 4m;
+    private const decimal ProfileLocationPoints = 4m;
+    private const decimal ProfileGovernoratePoints = 4m;
+    private const decimal ProfilePhonePoints = 3m;
+    private const decimal ProfileSizePoints = 4m;
+    private const decimal ProfileDocumentsPoints = 3m;
+    private const decimal ProfileCropsPoints = 3m;
+
+    private const decimal PointsPerCertification = 12.5m;
+    private const decimal PointsPerSignedContract = 10m;
+    private const int MaxRatingValue = 5;
+
     private readonly NileChainDbContext _context;
 
     public RiskPlugin(NileChainDbContext context)
@@ -20,36 +39,33 @@ public class RiskPlugin
     [KernelFunction("calculate_risk_score")]
     [Description("Calculates a detailed risk score for a specific farm")]
     public async Task<RiskReport> CalculateRiskScore(
-        [Description("The farm ID to evaluate")] string farmId)
+        [Description("The farm ID to evaluate")] Guid farmId)
     {
-        if (!Guid.TryParse(farmId, out var farmGuid))
-        {
-            return new RiskReport { AIAnalysis = "Invalid farm ID" };
-        }
-
         var farm = await _context.Farm
+            .Include(f => f.User)
             .Include(f => f.CropTypes)
+            .Include(f => f.FarmDocuments)
             .Include(f => f.FarmCertifications)
-            .FirstOrDefaultAsync(f => f.FarmId == farmGuid);
+            .FirstOrDefaultAsync(f => f.FarmId == farmId);
 
         if (farm is null)
         {
-            return new RiskReport { AIAnalysis = "Farm not found" };
+            return new RiskReport
+            {
+                FarmId = farmId,
+                AIAnalysis = "Farm not found"
+            };
         }
 
-        var completedContracts = await _context.Contracts
-            .CountAsync(c => c.FarmMatch.FarmId == farm.FarmId
-                             && c.Status == ContractStatus.Signed);
-
-        var avgRating = await _context.Reviews
-            .Where(r => r.TargetId == farm.UserId)
-            .AverageAsync(r => (decimal?)r.Rating) ?? 0;
-
         var profileScore = CalculateProfileScore(farm);
-        var certScore = farm.IsVerified || farm.FarmCertifications.Count > 0 ? 25m : 0m;
-        var contractScore = Math.Min(completedContracts * 10, 30);
-        var ratingScore = (avgRating / 5m) * 20m;
-        var overallScore = profileScore + certScore + contractScore + ratingScore;
+        var certScore = CalculateCertificationScore(farm);
+        var contractScore = await CalculateContractScoreAsync(farm.FarmId);
+        var ratingScore = await CalculateRatingScoreAsync(farm.UserId);
+
+        var overallScore = Clamp(
+            profileScore + certScore + contractScore + ratingScore,
+            0m,
+            MaxOverallScore);
 
         farm.RiskScore = overallScore;
         await _context.SaveChangesAsync();
@@ -63,20 +79,83 @@ public class RiskPlugin
             ProfileCompleteness = profileScore,
             CertificationScore = certScore,
             ContractHistoryScore = contractScore,
-            RatingScore = ratingScore,
+            RatingScore = ratingScore
         };
     }
 
     private static decimal CalculateProfileScore(Farm farm)
     {
+        // TODO: Farm has no Description field — cannot score description.
+        // TODO: Farm has no dedicated Images collection — only FarmDocument exists (scored below as documents).
+
         decimal score = 0;
-        if (!string.IsNullOrEmpty(farm.Name)) score += 5;
-        if (!string.IsNullOrEmpty(farm.Location)) score += 5;
-        if (!string.IsNullOrEmpty(farm.Governorate)) score += 5;
-        if (farm.SizeInFeddans is > 0) score += 5;
-        if (farm.CropTypes.Count > 0) score += 5;
-        return score;
+
+        if (!string.IsNullOrWhiteSpace(farm.Name))
+            score += ProfileNamePoints;
+
+        if (!string.IsNullOrWhiteSpace(farm.Location))
+            score += ProfileLocationPoints;
+
+        if (!string.IsNullOrWhiteSpace(farm.Governorate))
+            score += ProfileGovernoratePoints;
+
+        if (!string.IsNullOrWhiteSpace(farm.User?.PhoneNumber))
+            score += ProfilePhonePoints;
+
+        if (farm.SizeInFeddans is > 0)
+            score += ProfileSizePoints;
+
+        if (farm.FarmDocuments is { Count: > 0 })
+            score += ProfileDocumentsPoints;
+
+        if (farm.CropTypes is { Count: > 0 })
+            score += ProfileCropsPoints;
+
+        return Clamp(score, 0m, ProfileMaxPoints);
     }
+
+    private static decimal CalculateCertificationScore(Farm farm)
+    {
+        var certifications = farm.FarmCertifications;
+        if (certifications is null || certifications.Count == 0)
+            return 0m;
+
+        var now = DateTime.UtcNow;
+        var validCount = certifications.Count(c =>
+            c.ExpiresAt is null || c.ExpiresAt > now);
+
+        // TODO: No admin API to assign FarmCertification / Certification catalog yet — score is 0 until data exists.
+        return Clamp(validCount * PointsPerCertification, 0m, CertificationMaxPoints);
+    }
+
+    private async Task<decimal> CalculateContractScoreAsync(Guid farmId)
+    {
+        // Completed = Signed. No separate "Fulfilled" contract status exists.
+        var signedCount = await _context.Contracts
+            .AsNoTracking()
+            .CountAsync(c =>
+                c.FarmMatch.FarmId == farmId
+                && c.Status == ContractStatus.Signed);
+
+        // TODO: Contracts / FarmMatch are not persisted by the AI flow yet — history stays empty until that exists.
+        return Clamp(signedCount * PointsPerSignedContract, 0m, ContractMaxPoints);
+    }
+
+    private async Task<decimal> CalculateRatingScoreAsync(Guid farmUserId)
+    {
+        var avgRating = await _context.Reviews
+            .AsNoTracking()
+            .Where(r => r.TargetId == farmUserId)
+            .AverageAsync(r => (decimal?)r.Rating) ?? 0m;
+
+        // Rating is constrained 1–5 in the database.
+        // TODO: No review-creation API yet — score stays 0 until reviews exist.
+        var score = (avgRating / MaxRatingValue) * RatingMaxPoints;
+        return Clamp(score, 0m, RatingMaxPoints);
+    }
+
+    private static decimal Clamp(decimal value, decimal min, decimal max) =>
+        Math.Min(Math.Max(value, min), max);
 
     private static string GetRiskLevel(decimal score) => score switch
     {

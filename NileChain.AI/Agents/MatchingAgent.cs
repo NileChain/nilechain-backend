@@ -14,9 +14,6 @@ public class MatchingAgent
 
     public async Task<List<MatchResult>> RunAsync(AgentRequest request)
     {
-        return await _plugin.FindMatchingFarms(
-            request.CropType,
-            request.QuantityTons,
-            request.FactoryGovernorate);
+        return await _plugin.FindMatchingFarms(request.RequestId);
     }
 }

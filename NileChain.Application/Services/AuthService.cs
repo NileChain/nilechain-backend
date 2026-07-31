@@ -110,18 +110,34 @@ namespace NileChain.Application.Services
 
             if (role == "Farm")
             {
+                if (string.IsNullOrWhiteSpace(request.Name)
+                    || string.IsNullOrWhiteSpace(request.Governorate)
+                    || request.SizeInFeddans is not decimal sizeInFeddans
+                    || sizeInFeddans <= 0)
+                {
+                    await _userManager.DeleteAsync(user);
+                    return Result<AuthResponse>.Failure(AuthErrors.RegistrationFailed);
+                }
+
                 await _farmService.RegisterFarmAsync(
                     user.Id,
-                    request.Name!,
-                    request.Governorate!,
-                    request.SizeInFeddans!.Value);
+                    request.Name,
+                    request.Governorate,
+                    sizeInFeddans);
             }
             else if (role == "Factory")
             {
+                if (string.IsNullOrWhiteSpace(request.Name)
+                    || string.IsNullOrWhiteSpace(request.Governorate))
+                {
+                    await _userManager.DeleteAsync(user);
+                    return Result<AuthResponse>.Failure(AuthErrors.RegistrationFailed);
+                }
+
                 await _factoryService.RegisterFactoryAsync(
                     user.Id,
-                    request.Name!,
-                    request.Governorate!);
+                    request.Name,
+                    request.Governorate);
             }
 
             var token =

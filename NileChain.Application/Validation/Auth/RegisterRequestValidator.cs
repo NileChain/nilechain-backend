@@ -26,12 +26,13 @@ namespace NileChain.Application.Validation.Auth
                 .WithMessage("Passwords do not match.");
 
             RuleFor(x => x.BusinessType)
+                .NotEmpty()
                 .Must(x =>
                     x.Equals("Farm", StringComparison.OrdinalIgnoreCase)
                     || x.Equals("Factory", StringComparison.OrdinalIgnoreCase))
                 .WithMessage("BusinessType must be Farm or Factory.");
 
-            When(x => x.BusinessType.Equals("Farm", StringComparison.OrdinalIgnoreCase), () =>
+            When(x => IsFarm(x.BusinessType), () =>
             {
                 RuleFor(x => x.Name)
                     .NotEmpty()
@@ -41,9 +42,28 @@ namespace NileChain.Application.Validation.Auth
                     .WithMessage("Governorate is required.");
                 RuleFor(x => x.SizeInFeddans)
                     .NotNull()
+                    .WithMessage("Size in feddans is required.")
                     .GreaterThan(0)
                     .WithMessage("Size in feddans must be greater than 0.");
             });
+
+            When(x => IsFactory(x.BusinessType), () =>
+            {
+                RuleFor(x => x.Name)
+                    .NotEmpty()
+                    .WithMessage("Factory name is required.");
+                RuleFor(x => x.Governorate)
+                    .NotEmpty()
+                    .WithMessage("Governorate is required.");
+            });
         }
+
+        private static bool IsFarm(string? businessType) =>
+            !string.IsNullOrWhiteSpace(businessType)
+            && businessType.Equals("Farm", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsFactory(string? businessType) =>
+            !string.IsNullOrWhiteSpace(businessType)
+            && businessType.Equals("Factory", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -1,4 +1,9 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using NileChain.AI.Models;
+using NileChain.Domain.Entities;
+using NileChain.Domain.Enums;
+using NileChain.Infrastructure.Persistence;
 
 namespace NileChain.AI.Agents;
 
@@ -11,13 +16,19 @@ public class OrchestratorAgent
 
     private readonly MatchingAgent _matchingAgent;
     private readonly RiskAgent _riskAgent;
+    private readonly NileChainDbContext _context;
+    private readonly ILogger<OrchestratorAgent> _logger;
 
     public OrchestratorAgent(
         MatchingAgent matchingAgent,
-        RiskAgent riskAgent)
+        RiskAgent riskAgent,
+        NileChainDbContext context,
+        ILogger<OrchestratorAgent> logger)
     {
         _matchingAgent = matchingAgent;
         _riskAgent = riskAgent;
+        _context = context;
+        _logger = logger;
     }
 
     public async Task<AgentResponse> RunAsync(AgentRequest request)
@@ -46,6 +57,9 @@ public class OrchestratorAgent
                 if (report is null)
                     continue;
 
+                // Always expose the full RiskReport (additive for API consumers).
+                match.RiskReport = report;
+
                 if (IsFailedRiskReport(report))
                     continue;
 
@@ -70,6 +84,9 @@ public class OrchestratorAgent
                 .ThenByDescending(m => m.IsVerified)
                 .ToList();
 
+            // 5) Persist FarmMatch rows (soft-fail — never break the AI response)
+            await PersistFarmMatchesAsync(request.RequestId, matches);
+
             return new AgentResponse
             {
                 Success = true,
@@ -83,6 +100,67 @@ public class OrchestratorAgent
                 Success = false,
                 ErrorMessage = ex.Message
             };
+        }
+    }
+
+    /// <summary>
+    /// Upserts one FarmMatch per ranked farm for (RequestId, FarmId).
+    /// Seeder and domain usage treat that pair as logical unique; DB has no unique index.
+    /// New rows use Proposed; existing rows keep Status (Accept/Reject/Contract flow intact).
+    /// </summary>
+    private async Task PersistFarmMatchesAsync(Guid requestId, List<MatchResult> matches)
+    {
+        try
+        {
+            var farmIds = matches.Select(m => m.FarmId).ToList();
+
+            var existingMatches = await _context.FarmMatches
+                .Where(m => m.RequestId == requestId && farmIds.Contains(m.FarmId))
+                .ToListAsync();
+
+            var existingByFarmId = existingMatches
+                .GroupBy(m => m.FarmId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            var persistedCount = 0;
+
+            foreach (var match in matches)
+            {
+                if (existingByFarmId.TryGetValue(match.FarmId, out var existing))
+                {
+                    existing.MatchScore = match.MatchScore;
+                    existing.RiskScore = match.RiskScore;
+                    persistedCount++;
+                    continue;
+                }
+
+                _context.FarmMatches.Add(new FarmMatch
+                {
+                    MatchId = Guid.NewGuid(),
+                    RequestId = requestId,
+                    FarmId = match.FarmId,
+                    MatchScore = match.MatchScore,
+                    RiskScore = match.RiskScore,
+                    Status = FarmMatchStatus.Proposed,
+                    CreatedAt = DateTime.UtcNow
+                });
+                persistedCount++;
+            }
+
+            await _context.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "Persisted {Count} FarmMatch rows for RequestId {RequestId}",
+                persistedCount,
+                requestId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "Failed to persist FarmMatch rows for RequestId {RequestId}: {Exception}",
+                requestId,
+                ex.Message);
         }
     }
 

@@ -41,8 +41,10 @@ using (var scope = app.Services.CreateScope())
 
     if (app.Environment.IsDevelopment())
     {
+        var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("DevelopmentDataSeeder");
         var db = scope.ServiceProvider.GetRequiredService<NileChainDbContext>();
-        await DevelopmentDataSeeder.SeedAsync(db, userManager);
+        await DevelopmentDataSeeder.SeedAsync(db, userManager, logger);
     }
 }
 

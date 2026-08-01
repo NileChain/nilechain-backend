@@ -10,4 +10,9 @@ public class MatchResult
     public string RiskLevel { get; set; } = string.Empty;
     public bool IsVerified { get; set; }
     public List<string> CropTypes { get; set; } = new();
+
+    /// <summary>
+    /// Full risk breakdown for this farm (additive; existing score fields unchanged).
+    /// </summary>
+    public RiskReport? RiskReport { get; set; }
 }

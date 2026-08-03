@@ -73,6 +73,67 @@ public class ChromaService
             return string.Empty;
         }
     }
+
+    /// <summary>
+    /// Development helper: upsert documents into the knowledge collection.
+    /// Tries /add then /upsert against the local Chroma proxy. Returns 0 on failure.
+    /// </summary>
+    public async Task<int> UpsertDocumentsAsync(
+        string collectionName,
+        IReadOnlyList<ChromaSeedDocument> documents,
+        CancellationToken cancellationToken = default)
+    {
+        if (documents.Count == 0)
+            return 0;
+
+        var payload = new ChromaUpsertRequest
+        {
+            CollectionName = collectionName,
+            Ids = documents.Select(d => d.Id).ToArray(),
+            Documents = documents.Select(d => d.Document).ToArray(),
+            Metadatas = documents.Select(d => d.Metadata).ToArray()
+        };
+
+        foreach (var path in new[] { "/add", "/upsert" })
+        {
+            try
+            {
+                using var response = await _httpClient.PostAsJsonAsync(
+                    path,
+                    payload,
+                    JsonOptions,
+                    cancellationToken);
+
+                if (response.IsSuccessStatusCode)
+                    return documents.Count;
+            }
+            catch (HttpRequestException)
+            {
+                // try next path / soft-fail
+            }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // timeout — soft-fail
+            }
+        }
+
+        return 0;
+    }
+}
+
+public class ChromaUpsertRequest
+{
+    [JsonPropertyName("collection_name")]
+    public string CollectionName { get; set; } = string.Empty;
+
+    [JsonPropertyName("ids")]
+    public string[] Ids { get; set; } = [];
+
+    [JsonPropertyName("documents")]
+    public string[] Documents { get; set; } = [];
+
+    [JsonPropertyName("metadatas")]
+    public Dictionary<string, object>[] Metadatas { get; set; } = [];
 }
 
 public class ChromaQueryRequest

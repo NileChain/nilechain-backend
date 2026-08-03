@@ -23,6 +23,13 @@ public class RagPipeline
             nResults: 2);
     }
 
+    public async Task<string> GetAgriScienceAsync(string cropType)
+    {
+        return await _chromaService.QueryAsync(
+            $"علوم زراعية وممارسات زراعية لمحصول {cropType}",
+            nResults: 2);
+    }
+
     public async Task<string> GetCombinedContextAsync(string query)
     {
         if (string.IsNullOrWhiteSpace(query))
@@ -30,37 +37,31 @@ public class RagPipeline
 
         try
         {
-            var qualityTask = _chromaService.QueryAsync(
-                $"معايير جودة محصول {query} للاستخدام الصناعي",
-                nResults: 2);
+            var qualityTask = GetQualityStandardsAsync(query);
+            var contractTask = GetContractTemplateAsync(query);
+            var agriScienceTask = GetAgriScienceAsync(query);
 
-            var contractTask = _chromaService.QueryAsync(
-                $"قالب عقد توريد {query} بنود قانونية",
-                nResults: 2);
-
-            await Task.WhenAll(qualityTask, contractTask);
+            await Task.WhenAll(qualityTask, contractTask, agriScienceTask);
 
             var qualityResults = await qualityTask;
             var contractResults = await contractTask;
+            var agriScienceResults = await agriScienceTask;
 
             var sections = new List<string>();
 
             if (!string.IsNullOrWhiteSpace(qualityResults))
             {
-                sections.Add(
-                    "=== QUALITY STANDARDS ==="
-                    + Environment.NewLine
-                    + Environment.NewLine
-                    + qualityResults.Trim());
+                sections.Add(FormatSection("QUALITY STANDARDS", qualityResults));
             }
 
             if (!string.IsNullOrWhiteSpace(contractResults))
             {
-                sections.Add(
-                    "=== CONTRACT TEMPLATE ==="
-                    + Environment.NewLine
-                    + Environment.NewLine
-                    + contractResults.Trim());
+                sections.Add(FormatSection("CONTRACT TEMPLATE", contractResults));
+            }
+
+            if (!string.IsNullOrWhiteSpace(agriScienceResults))
+            {
+                sections.Add(FormatSection("AGRI SCIENCE", agriScienceResults));
             }
 
             if (sections.Count == 0)
@@ -73,4 +74,14 @@ public class RagPipeline
             return string.Empty;
         }
     }
+
+    private static string FormatSection(string title, string body) =>
+        "=================================="
+        + Environment.NewLine
+        + title
+        + Environment.NewLine
+        + "=================================="
+        + Environment.NewLine
+        + Environment.NewLine
+        + body.Trim();
 }

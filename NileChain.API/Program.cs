@@ -1,4 +1,5 @@
 using NileChain.AI;
+using NileChain.AI.RAG;
 using NileChain.API.Extensions;
 using NileChain.Application;
 using NileChain.Domain.Identity;
@@ -41,10 +42,14 @@ using (var scope = app.Services.CreateScope())
 
     if (app.Environment.IsDevelopment())
     {
-        var logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
-            .CreateLogger("DevelopmentDataSeeder");
+        var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+        var logger = loggerFactory.CreateLogger("DevelopmentDataSeeder");
         var db = scope.ServiceProvider.GetRequiredService<NileChainDbContext>();
         await DevelopmentDataSeeder.SeedAsync(db, userManager, logger);
+
+        var chromaLogger = loggerFactory.CreateLogger("ChromaKnowledgeSeeder");
+        var chroma = scope.ServiceProvider.GetRequiredService<ChromaService>();
+        await ChromaKnowledgeSeeder.SeedAsync(chroma, chromaLogger);
     }
 }
 
@@ -55,8 +60,9 @@ app.MapScalarApiReference(options =>
         .WithTitle("NileChain API")
         .WithDefaultHttpClient(ScalarTarget.CSharp, ScalarClient.HttpClient);
 });
-app.UseHttpsRedirection();
+// CORS before HTTPS redirection so browser preflight from Angular is not stripped by redirects.
 app.UseCors("AngularPolicy");
+app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();

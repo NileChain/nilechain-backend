@@ -10,7 +10,13 @@ public static class IdentitySeeder
         RoleManager<ApplicationRole> roleManager,
         UserManager<ApplicationUser> userManager)
     {
-        foreach (var role in new[] { AppRoles.Farm, AppRoles.Factory, AppRoles.Admin })
+        foreach (var role in new[]
+                 {
+                     AppRoles.Farm,
+                     AppRoles.Factory,
+                     AppRoles.Admin,
+                     AppRoles.SuperAdmin
+                 })
         {
             if (!await roleManager.RoleExistsAsync(role))
                 await roleManager.CreateAsync(new ApplicationRole { Name = role });
@@ -24,6 +30,7 @@ public static class IdentitySeeder
                 UserName = adminEmail,
                 Email = adminEmail,
                 IsVerified = true,
+                IsActive = true,
                 EmailConfirmed = true
             };
             await userManager.CreateAsync(admin, "Admin123@");

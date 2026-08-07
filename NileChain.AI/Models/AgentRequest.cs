@@ -9,4 +9,10 @@ public class AgentRequest
     public decimal PricePerTon { get; set; }
     public DateTime DeliveryDate { get; set; }
     public string FactoryGovernorate { get; set; } = string.Empty;
+
+    /// <summary>
+    /// When true, the factory has acknowledged a prior low-risk warning and
+    /// GenerateContract may proceed despite FlagLowRiskWarning having fired.
+    /// </summary>
+    public bool ConfirmHighRiskWarning { get; set; }
 }

@@ -1,10 +1,10 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.SemanticKernel;
 using NileChain.AI.Agents;
 using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Services;
+using NileChain.AI.Sbg;
 
 namespace NileChain.AI;
 
@@ -14,25 +14,52 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        services.AddSingleton(sp =>
+        services.Configure<SbgOptions>(configuration.GetSection(SbgOptions.SectionName));
+
+        // Overlay env / OpenAI key into Sbg options for local .env workflows.
+        services.PostConfigure<SbgOptions>(opts =>
         {
-            var key = Environment.GetEnvironmentVariable("OPENAI_KEY")
-                      ?? configuration["OpenAI:ApiKey"];
+            var configured = FirstNonEmpty(
+                opts.BaseUrl,
+                configuration["Sbg:BaseUrl"],
+                Environment.GetEnvironmentVariable("SBG_BASE_URL"));
 
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                return new OpenAiKernelProvider(
+            if (!string.IsNullOrWhiteSpace(configured))
+                opts.BaseUrl = LlmKernelFactory.NormalizeSbgOrigin(configured);
+
+            if (string.IsNullOrWhiteSpace(opts.ApiKey))
+                opts.ApiKey = LlmKernelFactory.ResolveApiKey(configuration) ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(opts.ModelId))
+                opts.ModelId = LlmKernelFactory.ResolveModel(configuration);
+        });
+
+        services.AddHttpClient<SbgStudentChatClient>(client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(2);
+        });
+
+        // Scoped: typed HttpClient (SbgStudentChatClient) must not be captured by a singleton.
+        services.AddScoped(sp =>
+        {
+            var sbg = sp.GetService<SbgStudentChatClient>();
+            var kernel = LlmKernelFactory.CreateKernel(
+                configuration,
+                out var unavailableReason,
+                out var supportsNativeToolCalling,
+                out var providerName,
+                sbg);
+
+            return kernel is null
+                ? new OpenAiKernelProvider(
                     kernel: null,
-                    unavailableReason: "AI service is unavailable. Set OPENAI_KEY or OpenAI:ApiKey.");
-            }
-
-            var kernel = Kernel.CreateBuilder()
-                .AddOpenAIChatCompletion(
-                    configuration["OpenAI:Model"] ?? "gpt-4o",
-                    key)
-                .Build();
-
-            return new OpenAiKernelProvider(kernel);
+                    unavailableReason: unavailableReason,
+                    supportsNativeToolCalling: false,
+                    providerName: providerName)
+                : new OpenAiKernelProvider(
+                    kernel,
+                    supportsNativeToolCalling: supportsNativeToolCalling,
+                    providerName: providerName);
         });
 
         services.AddHttpClient<ChromaService>(client =>
@@ -59,4 +86,7 @@ public static class DependencyInjection
 
         return services;
     }
+
+    private static string? FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
 }

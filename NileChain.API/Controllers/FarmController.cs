@@ -4,12 +4,13 @@ using NileChain.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using NileChain.Domain.Constants;
 
 namespace NileChain.API.Controllers;
 
 [Route("api/farm")]
 [ApiController]
-[Authorize]
+[Authorize(Roles = AppRoles.Farm)]
 public class FarmController : ControllerBase
 {
     private readonly IFarmService _farmService;

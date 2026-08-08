@@ -55,4 +55,5 @@ TestResults/
 ## Publish output
 publish/
 out/
+_build_check/
 /Project-Instructions

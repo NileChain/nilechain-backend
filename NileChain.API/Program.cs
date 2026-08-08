@@ -1,10 +1,12 @@
 using NileChain.AI;
 using NileChain.AI.RAG;
 using NileChain.API.Extensions;
+using NileChain.API.Options;
 using NileChain.Application;
 using NileChain.Domain.Identity;
 using NileChain.Infrastructure;
 using NileChain.Infrastructure.Persistence;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 
@@ -24,6 +26,24 @@ LoadDotEnv(Path.Combine(builder.Environment.ContentRootPath, ".env"));
 LoadDotEnv(Path.Combine(builder.Environment.ContentRootPath, "..", ".env"));
 builder.Configuration.AddEnvironmentVariables();
 
+// Heroku sets PORT; honor ASPNETCORE_URLS when already provided.
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
+{
+    var port = Environment.GetEnvironmentVariable("PORT");
+    if (!string.IsNullOrWhiteSpace(port))
+        builder.WebHost.UseUrls($"http://*:{port}");
+}
+
+ValidateProductionConfiguration(builder);
+
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    // Trust Heroku (and similar) reverse proxies in front of the dyno.
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddNileChainAI(builder.Configuration);
@@ -35,20 +55,22 @@ builder.Services.AddControllers(options =>
 builder.Services.AddScoped<NileChain.API.Filters.FluentValidationActionFilter>();
 builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
+
+var corsOrigins = ResolveCorsOrigins(builder.Configuration);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AngularPolicy", policy =>
     {
-        policy.WithOrigins(
-                  "http://localhost:4200",
-                  "http://127.0.0.1:4200")
+        policy.WithOrigins(corsOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
     });
 });
+
 var app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseGlobalExceptionMiddleware();
 
 using (var scope = app.Services.CreateScope())
@@ -57,7 +79,14 @@ using (var scope = app.Services.CreateScope())
     {
         var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>();
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-        await IdentitySeeder.SeedAsync(roleManager, userManager);
+        var seedLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("IdentitySeeder");
+        await IdentitySeeder.SeedAsync(
+            roleManager,
+            userManager,
+            app.Environment,
+            app.Configuration,
+            seedLogger);
 
         var seedOnStartup = string.Equals(
             Environment.GetEnvironmentVariable("SEED_DEMO_ON_STARTUP"),
@@ -127,17 +156,84 @@ if (seedDemoOnly)
     return;
 }
 
-app.MapOpenApi();
+// Development: always on. Production: only when OpenApi:Enabled=true (graduation demo opt-in).
+var openApiEnabled = app.Environment.IsDevelopment()
+    || app.Configuration.GetValue("OpenApi:Enabled", false);
+if (openApiEnabled)
+    app.MapOpenApi();
+
 // Scalar UI omitted: Application Control in some environments blocks Scalar.AspNetCore.dll load.
 // CORS before HTTPS redirection so browser preflight from Angular is not stripped by redirects.
 app.UseCors("AngularPolicy");
-app.UseHttpsRedirection();
+
+// Local HTTPS (launchSettings). On Heroku TLS terminates at the router; dyno listens on HTTP $PORT.
+if (app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static void ValidateProductionConfiguration(WebApplicationBuilder builder)
+{
+    if (!builder.Environment.IsProduction())
+        return;
+
+    var connection = builder.Configuration.GetConnectionString("DefaultConnection");
+    if (string.IsNullOrWhiteSpace(connection))
+    {
+        throw new InvalidOperationException(
+            "ConnectionStrings:DefaultConnection must be set in Production (e.g. ConnectionStrings__DefaultConnection).");
+    }
+
+    var jwtSecret = builder.Configuration["Jwt:Secret"];
+    if (string.IsNullOrWhiteSpace(jwtSecret)
+        || string.Equals(jwtSecret, "__SET_IN_LOCAL_CONFIG__", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            "Jwt:Secret must be set to a strong secret in Production (e.g. Jwt__Secret).");
+    }
+}
+
+static string[] ResolveCorsOrigins(IConfiguration configuration)
+{
+    var origins = new List<string>();
+    var section = configuration.GetSection($"{CorsOptions.SectionName}:Origins");
+
+    var children = section.GetChildren().ToList();
+    if (children.Count > 0)
+    {
+        foreach (var child in children)
+        {
+            if (!string.IsNullOrWhiteSpace(child.Value))
+                origins.Add(child.Value.Trim());
+        }
+    }
+    else if (!string.IsNullOrWhiteSpace(section.Value))
+    {
+        // Heroku-friendly single config var: Cors__Origins=https://a.com,https://b.com
+        origins.AddRange(
+            section.Value.Split(
+                [',', ';'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    var distinct = origins
+        .Where(o => o.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    if (distinct.Length > 0)
+        return distinct;
+
+    return
+    [
+        "http://localhost:4200",
+        "http://127.0.0.1:4200"
+    ];
+}
 
 static string DescribeSqlHost(string connectionString)
 {

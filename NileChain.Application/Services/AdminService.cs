@@ -15,20 +15,26 @@ namespace NileChain.Application.Services
         private readonly RoleManager<ApplicationRole> _roleManager;
         private readonly IFarmRepository _farmRepository;
         private readonly IFactoryRepository _factoryRepository;
+        private readonly IRepository<NileChain.Domain.Entities.RagDocument> _ragDocumentRepository;
         private readonly IUnitOfWork _unitOfWork;
+        private readonly IRagIndexer? _ragIndexer;
 
         public AdminService(
             UserManager<ApplicationUser> userManager,
             RoleManager<ApplicationRole> roleManager,
             IFarmRepository farmRepository,
             IFactoryRepository factoryRepository,
-            IUnitOfWork unitOfWork)
+            IRepository<NileChain.Domain.Entities.RagDocument> ragDocumentRepository,
+            IUnitOfWork unitOfWork,
+            IRagIndexer? ragIndexer = null)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _farmRepository = farmRepository;
             _factoryRepository = factoryRepository;
+            _ragDocumentRepository = ragDocumentRepository;
             _unitOfWork = unitOfWork;
+            _ragIndexer = ragIndexer;
         }
 
         public async Task<PagedResult<UserListItem>> GetUsersAsync(string? role, bool? isVerified, string? search, int page, int pageSize)
@@ -410,6 +416,67 @@ namespace NileChain.Application.Services
             await _userManager.UpdateAsync(user);
 
             return Result.Success();
+        }
+
+        public async Task<Result<RagUploadResult>> UploadRagDocumentAsync(
+            Guid uploadedBy,
+            string title,
+            string? category,
+            string filePath,
+            string contentText)
+        {
+            if (string.IsNullOrWhiteSpace(title))
+                return Result<RagUploadResult>.Failure(new Error("Admin.RagTitleRequired", "Document title is required."));
+
+            var doc = new NileChain.Domain.Entities.RagDocument
+            {
+                DocumentId = Guid.NewGuid(),
+                Title = title.Trim(),
+                Category = string.IsNullOrWhiteSpace(category) ? "general" : category.Trim(),
+                FilePath = filePath,
+                UploadedBy = uploadedBy,
+                UploadedAt = DateTime.UtcNow
+            };
+
+            await _ragDocumentRepository.AddAsync(doc);
+            await _unitOfWork.SaveChangesAsync();
+
+            var indexed = false;
+            if (_ragIndexer is not null && !string.IsNullOrWhiteSpace(contentText))
+            {
+                indexed = await _ragIndexer.IndexDocumentAsync(
+                    doc.DocumentId.ToString("N"),
+                    doc.Title,
+                    doc.Category,
+                    contentText);
+            }
+
+            return Result<RagUploadResult>.Success(new RagUploadResult
+            {
+                DocumentId = doc.DocumentId,
+                Title = doc.Title,
+                Category = doc.Category,
+                IndexedInChroma = indexed
+            });
+        }
+
+        public async Task<Result<List<RagDocumentDto>>> GetRagDocumentsAsync()
+        {
+            var docs = await _ragDocumentRepository.GetAllAsync();
+            var dtos = docs
+                .OrderByDescending(d => d.UploadedAt)
+                .Select(d => new RagDocumentDto
+                {
+                    DocumentId = d.DocumentId,
+                    Title = d.Title,
+                    Category = d.Category,
+                    FilePath = d.FilePath,
+                    UploadedAt = d.UploadedAt,
+                    Status = "indexed"
+                })
+                .ToList();
+
+            return Result<List<RagDocumentDto>>.Success(dtos);
         }
     }
 }

@@ -7,6 +7,8 @@ public class FactoryMatchItemDto
     public string FarmName { get; set; } = default!;
     public string? FarmLocation { get; set; }
     public string? FarmGovernorate { get; set; }
+    public decimal? FarmLatitude { get; set; }
+    public decimal? FarmLongitude { get; set; }
     public bool FarmIsVerified { get; set; }
     public decimal FarmAverageRating { get; set; }
     public decimal? MatchScore { get; set; }

@@ -7,8 +7,8 @@ using Microsoft.Extensions.Logging;
 namespace NileChain.Infrastructure.Persistence;
 
 /// <summary>
-/// Idempotent development-only sample data. Inserts entities only when missing.
-/// Never runs against Production (caller must gate on IsDevelopment).
+/// Idempotent development/demo sample data. Inserts entities only when missing.
+/// Prefer running via <c>dotnet run -- --seed-demo</c> (not every app startup).
 /// </summary>
 public static partial class DevelopmentDataSeeder
 {
@@ -18,78 +18,181 @@ public static partial class DevelopmentDataSeeder
         ILogger? logger = null)
     {
         var rng = new Random(2026);
+        var phases = new List<SeedPhaseResult>();
+        DevelopmentSeedReport? report = null;
+        DemoSeedReport? demoReport = null;
 
-        var cropTypes = await SeedCropTypesAsync(db);
-        var certifications = await SeedCertificationsAsync(db);
-        await SeedGovernorateMarketPricesAsync(db, cropTypes);
-        db.ChangeTracker.Clear();
+        async Task RunPhaseAsync(string name, Func<Task> action)
+        {
+            logger?.LogInformation("Seed phase START: {Phase}", name);
+            Console.WriteLine($"[SEED] START {name}");
+            try
+            {
+                await action();
+                phases.Add(new SeedPhaseResult(name, true, null));
+                logger?.LogInformation("Seed phase OK: {Phase}", name);
+                Console.WriteLine($"[SEED] OK    {name}");
+            }
+            catch (Exception ex)
+            {
+                phases.Add(new SeedPhaseResult(name, false, ex.Message));
+                logger?.LogError(ex, "Seed phase FAILED: {Phase}", name);
+                Console.WriteLine($"[SEED] FAIL  {name}: {ex.Message}");
+                throw;
+            }
+        }
 
-        var admins = await SeedAdminsAsync(userManager);
-        await SeedFactoriesAsync(db, userManager, rng);
-        db.ChangeTracker.Clear();
-        var factories = await ReloadSeedFactoriesAsync(db);
+        try
+        {
+            List<CropType> cropTypes = [];
+            List<Certification> certifications = [];
+            List<Factory> factories = [];
+            List<Farm> farms = [];
+            List<SupplyRequest> supplyRequests = [];
+            List<FarmMatch> matches = [];
+            List<Contract> contracts = [];
+            List<ApplicationUser> admins = [];
+            var ragCount = 0;
 
-        cropTypes = await db.CropTypes.ToListAsync();
-        certifications = await db.Certifications.ToListAsync();
-        await SeedFarmsAsync(db, userManager, cropTypes, certifications, rng);
-        db.ChangeTracker.Clear();
-        var farms = await ReloadSeedFarmsAsync(db);
+            await RunPhaseAsync("CropTypes", async () =>
+            {
+                cropTypes = await SeedCropTypesAsync(db);
+            });
 
-        // Re-attach farms briefly for document seeding
-        var farmEmailSet = AllSeedFarmEmails().ToHashSet(StringComparer.OrdinalIgnoreCase);
-        farms = await db.Farm
-            .Include(f => f.User)
-            .Include(f => f.FarmCertifications)
-            .Where(f => f.User.Email != null && farmEmailSet.Contains(f.User.Email))
-            .OrderBy(f => f.User.Email)
-            .ToListAsync();
-        await SeedFarmDocumentsAsync(db, farms, rng);
-        db.ChangeTracker.Clear();
-        farms = await ReloadSeedFarmsAsync(db);
+            await RunPhaseAsync("Certifications", async () =>
+            {
+                certifications = await SeedCertificationsAsync(db);
+            });
 
-        await SeedSupplyRequestsAsync(db, factories, cropTypes, rng);
-        db.ChangeTracker.Clear();
-        var supplyRequests = await ReloadSeedRequestsAsync(db);
+            await RunPhaseAsync("MarketPrices", async () =>
+            {
+                await SeedGovernorateMarketPricesAsync(db, cropTypes);
+                db.ChangeTracker.Clear();
+            });
 
-        await SeedFarmMatchesAsync(db, farms, supplyRequests, rng);
-        db.ChangeTracker.Clear();
-        var matches = await ReloadSeedMatchesAsync(db);
+            await RunPhaseAsync("Admins", async () =>
+            {
+                admins = await SeedAdminsAsync(userManager);
+            });
 
-        await SeedContractsAsync(db, matches, rng);
-        db.ChangeTracker.Clear();
-        var contracts = await ReloadSeedContractsAsync(db);
-        matches = await ReloadSeedMatchesAsync(db);
-        factories = await ReloadSeedFactoriesAsync(db);
-        farms = await ReloadSeedFarmsAsync(db);
+            await RunPhaseAsync("Factories", async () =>
+            {
+                await SeedFactoriesAsync(db, userManager, rng);
+                db.ChangeTracker.Clear();
+                factories = await ReloadSeedFactoriesAsync(db);
+            });
 
-        await SeedMessagesAsync(db, matches, farms, factories, rng);
-        db.ChangeTracker.Clear();
+            await RunPhaseAsync("Farms", async () =>
+            {
+                cropTypes = await db.CropTypes.ToListAsync();
+                certifications = await db.Certifications.ToListAsync();
+                await SeedFarmsAsync(db, userManager, cropTypes, certifications, rng);
+                db.ChangeTracker.Clear();
+                farms = await ReloadSeedFarmsAsync(db);
+            });
 
-        await SeedReviewsAsync(db, contracts, matches, farms, factories, rng);
-        db.ChangeTracker.Clear();
+            await RunPhaseAsync("FarmDocuments", async () =>
+            {
+                var farmEmailSet = AllSeedFarmEmails().ToHashSet(StringComparer.OrdinalIgnoreCase);
+                farms = await db.Farm
+                    .Include(f => f.User)
+                    .Include(f => f.FarmCertifications)
+                    .Where(f => f.User.Email != null && farmEmailSet.Contains(f.User.Email))
+                    .OrderBy(f => f.User.Email)
+                    .ToListAsync();
+                await SeedFarmDocumentsAsync(db, farms, rng);
+                db.ChangeTracker.Clear();
+                farms = await ReloadSeedFarmsAsync(db);
+            });
 
-        await RecalculateRatingsAsync(db);
-        db.ChangeTracker.Clear();
+            await RunPhaseAsync("SupplyRequests", async () =>
+            {
+                await SeedSupplyRequestsAsync(db, factories, cropTypes, rng);
+                db.ChangeTracker.Clear();
+                supplyRequests = await ReloadSeedRequestsAsync(db);
+            });
 
-        await SeedNotificationsAsync(db, userManager, farms, factories, admins, rng);
-        db.ChangeTracker.Clear();
+            await RunPhaseAsync("FarmMatches", async () =>
+            {
+                await SeedFarmMatchesAsync(db, farms, supplyRequests, rng);
+                db.ChangeTracker.Clear();
+                matches = await ReloadSeedMatchesAsync(db);
+            });
 
-        var ragCount = await SeedRagDocumentsAsync(db, admins);
-        db.ChangeTracker.Clear();
+            await RunPhaseAsync("Contracts", async () =>
+            {
+                await SeedContractsAsync(db, matches, rng);
+                db.ChangeTracker.Clear();
+                contracts = await ReloadSeedContractsAsync(db);
+                matches = await ReloadSeedMatchesAsync(db);
+                factories = await ReloadSeedFactoriesAsync(db);
+                farms = await ReloadSeedFarmsAsync(db);
+            });
 
-        // Permanent demo / QA profiles (fixed emails, password, workflows).
-        cropTypes = await db.CropTypes.ToListAsync();
-        certifications = await db.Certifications.ToListAsync();
-        var demoReport = await SeedDemoProfilesAsync(db, userManager, cropTypes, certifications);
-        db.ChangeTracker.Clear();
+            await RunPhaseAsync("Messages", async () =>
+            {
+                await SeedMessagesAsync(db, matches, farms, factories, rng);
+                db.ChangeTracker.Clear();
+            });
 
-        var qa = await RunQaChecksAsync(db);
-        var report = await BuildReportAsync(db, userManager, qa, ragCount);
-        logger?.LogInformation("{Report}", report.ToSummary());
-        Console.WriteLine(report.ToSummary());
-        logger?.LogInformation("{DemoReport}", demoReport.ToSummary());
-        Console.WriteLine(demoReport.ToSummary());
-        return report;
+            await RunPhaseAsync("Reviews", async () =>
+            {
+                await SeedReviewsAsync(db, contracts, matches, farms, factories, rng);
+                db.ChangeTracker.Clear();
+            });
+
+            await RunPhaseAsync("RecalculateRatings", async () =>
+            {
+                await RecalculateRatingsAsync(db);
+                db.ChangeTracker.Clear();
+            });
+
+            await RunPhaseAsync("Notifications", async () =>
+            {
+                await SeedNotificationsAsync(db, userManager, farms, factories, admins, rng);
+                db.ChangeTracker.Clear();
+            });
+
+            await RunPhaseAsync("RagDocuments", async () =>
+            {
+                ragCount = await SeedRagDocumentsAsync(db, admins);
+                db.ChangeTracker.Clear();
+            });
+
+            await RunPhaseAsync("DemoProfiles", async () =>
+            {
+                cropTypes = await db.CropTypes.ToListAsync();
+                certifications = await db.Certifications.ToListAsync();
+                demoReport = await SeedDemoProfilesAsync(db, userManager, cropTypes, certifications);
+                db.ChangeTracker.Clear();
+            });
+
+            var qa = await RunQaChecksAsync(db);
+            report = await BuildReportAsync(db, userManager, qa, ragCount);
+            report.Phases = phases;
+            logger?.LogInformation("{Report}", report.ToSummary());
+            Console.WriteLine(report.ToSummary());
+            if (demoReport is not null)
+            {
+                logger?.LogInformation("{DemoReport}", demoReport.ToSummary());
+                Console.WriteLine(demoReport.ToSummary());
+            }
+
+            return report;
+        }
+        catch (Exception ex)
+        {
+            var failed = phases.Where(p => !p.Succeeded).Select(p => p.Name).ToList();
+            var ok = phases.Where(p => p.Succeeded).Select(p => p.Name).ToList();
+            var summary =
+                $"[SEED] ABORTED after failure.\n" +
+                $"Succeeded phases ({ok.Count}): {string.Join(", ", ok)}\n" +
+                $"Failed phases ({failed.Count}): {string.Join(", ", failed)}\n" +
+                $"Error: {ex.Message}";
+            logger?.LogError(ex, "{Summary}", summary);
+            Console.WriteLine(summary);
+            throw;
+        }
     }
 
     private static async Task<List<Factory>> ReloadSeedFactoriesAsync(NileChainDbContext db)
@@ -203,7 +306,11 @@ public static partial class DevelopmentDataSeeder
             .Select(p => (p.CropTypeId, Gov: p.Governorate ?? "", p.Day))
             .ToHashSet();
 
-        var dateOffsets = new[] { 0, 7, 14, 30, 60, 90 };
+        // ~6 months of weekly points for dashboard Chart.js trends
+        var dateOffsets = new[]
+        {
+            0, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 105, 120, 135, 150, 165, 180
+        };
         var added = false;
         var offset = 0;
 
@@ -360,7 +467,8 @@ public static partial class DevelopmentDataSeeder
         var seedContractCount = await db.Contracts.CountAsync(c =>
             c.GeneratedText != null && c.GeneratedText.Contains(SeedMarker));
         var seedMessageCount = await db.Messages.CountAsync(m => m.Content.Contains(SeedMarker));
-        var seedNotificationCount = await db.Notifications.CountAsync(n => n.Title.Contains(SeedMarker));
+        var seedNotificationCount = await db.Notifications.CountAsync(n =>
+            n.Message.Contains(SeedMarker) || n.Title.Contains(SeedMarker));
         var seedReviewCount = await db.Reviews.CountAsync(r =>
             r.Comment != null && r.Comment.Contains(SeedMarker));
         var seedDocCount = await db.FarmDocuments.CountAsync(d => d.FileName.Contains(SeedMarker));
@@ -439,17 +547,22 @@ public static partial class DevelopmentDataSeeder
             Notes =
             [
                 "Counts are seed-owned rows (marker/email keyed), not entire DB totals.",
+                "Markers: [SEED] on bulk data; [DEMO] on fixed QA demo.* accounts.",
+                "REQ-001..REQ-005 intentionally have zero matches for live agent demos.",
                 "SupplyRequestStatus has no Expired; Cancelled covers withdrawn requests.",
                 "ContractStatus has no Expired; Cancelled covers terminated contracts.",
                 "Factory capacity is encoded in IndustryType (no Capacity column).",
                 "ChromaDocuments reflects RagDocument rows; live Chroma ingest is best-effort.",
-                $"Password for all seed.* accounts: {SeedPassword}"
+                $"Password for all seed.* accounts: {SeedPassword}",
+                "Password for all demo.* accounts: Demo123@!"
             ]
         };
     }
 }
 
 public sealed record DevelopmentSeedQaResult(bool Passed, List<string> Errors);
+
+public sealed record SeedPhaseResult(string Name, bool Succeeded, string? Error);
 
 public sealed record SeedSupplyRequestInfo(
     Guid RequestId,
@@ -489,6 +602,7 @@ public sealed class DevelopmentSeedReport
     public List<string> QaErrors { get; init; } = [];
     public bool Idempotent { get; init; }
     public List<string> Notes { get; init; } = [];
+    public List<SeedPhaseResult> Phases { get; set; } = [];
 
     public string ToSummary()
     {
@@ -521,8 +635,17 @@ public sealed class DevelopmentSeedReport
             $"Crop Types Covered: {CropTypesCovered}",
             $"SuperAdmin: {SuperAdminEmail}",
             $"Admins: {string.Join(", ", AdminEmails)}",
-            "Password (seed.*): Seed123@!"
+            "Password (seed.*): Seed123@!",
+            "Password (demo.*): Demo123@!"
         };
+
+        if (Phases.Count > 0)
+        {
+            lines.Add("Phases:");
+            foreach (var p in Phases)
+                lines.Add($"  - {(p.Succeeded ? "OK" : "FAIL")} {p.Name}" +
+                          (p.Error is null ? "" : $": {p.Error}"));
+        }
 
         foreach (var err in QaErrors)
             lines.Add($"QA ERROR: {err}");

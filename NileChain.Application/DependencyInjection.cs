@@ -20,6 +20,9 @@ public static class DependencyInjection
         services.AddScoped<IFactoryService, FactoryService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IAdminService, AdminService>();
+        services.AddScoped<IMarketPriceService, MarketPriceService>();
+        services.AddScoped<IReviewService, ReviewService>();
+        services.AddScoped<IContractPdfService, ContractPdfService>();
 
         return services;
     }

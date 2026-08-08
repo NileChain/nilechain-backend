@@ -137,7 +137,7 @@ public class RiskPlugin
                 c.FarmMatch.FarmId == farmId
                 && c.Status == ContractStatus.Signed);
 
-        // TODO: Contracts / FarmMatch are not persisted by the AI flow yet — history stays empty until that exists.
+        // FarmMatch rows are persisted by OrchestratorAgent after each run.
         return Clamp(signedCount * PointsPerSignedContract, 0m, ContractMaxPoints);
     }
 

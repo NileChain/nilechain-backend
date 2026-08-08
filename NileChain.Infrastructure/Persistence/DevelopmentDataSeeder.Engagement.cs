@@ -293,7 +293,7 @@ public static partial class DevelopmentDataSeeder
         Random rng)
     {
         var existing = await db.Notifications
-            .Where(n => n.Title.Contains(SeedMarker))
+            .Where(n => n.Message.Contains(SeedMarker) || n.Title.Contains(SeedMarker))
             .Select(n => new { n.UserId, n.Title })
             .ToListAsync();
         var pairSet = existing.Select(e => (e.UserId, e.Title)).ToHashSet();
@@ -323,7 +323,8 @@ public static partial class DevelopmentDataSeeder
         {
             if (existingCount + created >= target)
                 return;
-            var seedTitle = $"{SeedMarker} {title} #{existingCount + created + 1:D3}";
+            var seedTitle = $"{title} #{existingCount + created + 1:D3}";
+            var seedMessage = $"{SeedMarker}:{type}:{existingCount + created + 1:D3} {message}";
             if (!pairSet.Add((userId, seedTitle)))
                 return;
 
@@ -332,7 +333,7 @@ public static partial class DevelopmentDataSeeder
                 NotificationId = Guid.NewGuid(),
                 UserId = userId,
                 Title = seedTitle,
-                Message = message,
+                Message = seedMessage,
                 Type = type,
                 IsRead = isRead,
                 CreatedAt = DateTime.UtcNow.AddHours(-hoursAgo)

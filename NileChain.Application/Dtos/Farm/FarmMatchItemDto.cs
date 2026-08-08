@@ -16,4 +16,5 @@ public class FarmMatchItemDto
     public decimal? RiskScore { get; set; }
     public string Status { get; set; } = default!;
     public DateTime CreatedAt { get; set; }
+    public Guid? ContractId { get; set; }
 }

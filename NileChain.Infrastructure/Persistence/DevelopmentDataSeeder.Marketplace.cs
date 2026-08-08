@@ -12,7 +12,7 @@ public static partial class DevelopmentDataSeeder
         List<CropType> cropTypes,
         Random rng)
     {
-        const int targetCount = 85;
+        const int targetCount = SeedSupplyRequestCount;
         // Factory index 9 (10th) intentionally gets zero requests — edge case.
         var activeFactories = factories
             .Where((_, idx) => idx < factories.Count - 1)
@@ -128,11 +128,14 @@ public static partial class DevelopmentDataSeeder
                         && m.SupplyRequest.QualitySpecs.Contains(SeedMarker))
             .ToListAsync();
 
-        // Leave REQ-001 and REQ-002 with zero matches (edge: request without matches)
+        // Leave REQ-001..REQ-005 with zero matches (fresh requests for live agent demos)
         var matchable = requests
             .Where(r => r.QualitySpecs != null
                         && !r.QualitySpecs.Contains("REQ-001")
-                        && !r.QualitySpecs.Contains("REQ-002"))
+                        && !r.QualitySpecs.Contains("REQ-002")
+                        && !r.QualitySpecs.Contains("REQ-003")
+                        && !r.QualitySpecs.Contains("REQ-004")
+                        && !r.QualitySpecs.Contains("REQ-005"))
             .ToList();
 
         var statuses = new[]
@@ -148,7 +151,7 @@ public static partial class DevelopmentDataSeeder
 
         var added = false;
         var created = 0;
-        const int targetMatches = 300;
+        const int targetMatches = SeedMatchTarget;
 
         // Ensure AI score bands: high / medium / poor across farms
         var scoreBands = new (decimal Min, decimal Max)[]
@@ -265,7 +268,7 @@ public static partial class DevelopmentDataSeeder
         List<FarmMatch> _,
         Random rng)
     {
-        const int targetContracts = 120;
+        const int targetContracts = SeedContractTarget;
 
         // Work on tracked seed matches so Accepted promotions persist.
         var tracked = await db.FarmMatches
@@ -329,9 +332,11 @@ public static partial class DevelopmentDataSeeder
                 ContractId = Guid.NewGuid(),
                 MatchId = match.MatchId,
                 GeneratedText =
-                    $"{SeedMarker} Development supply contract for match {match.MatchId:N}. " +
-                    $"Parties agree on quantity, quality specs, and delivery. Status={status}. " +
-                    "Governed by Egyptian civil code. Force majeure includes extreme Nile flood events.",
+                    $"{SeedMarker} عقد توريد زراعي — Development supply contract for match {match.MatchId:N}.\n" +
+                    "بسم الله الرحمن الرحيم\n" +
+                    "**عقد توريد زراعي**\n" +
+                    "الطرف الأول (المورد / المزرعة) والطرف الثاني (المصنع) يوافقان على الكمية والمواصفات وموعد التوريد.\n" +
+                    $"Status={status}. Governed by Egyptian civil code. Force majeure includes extreme Nile flood events.",
                 PdfUrl = status is ContractStatus.Signed or ContractStatus.PendingSignature
                     ? $"https://res.cloudinary.com/demo/raw/upload/seed/contracts/{match.MatchId:N}.pdf"
                     : null,

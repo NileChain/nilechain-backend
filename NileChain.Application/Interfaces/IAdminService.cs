@@ -13,5 +13,12 @@ namespace NileChain.Application.Interfaces
         Task<Result> UnblockUserAsync(Guid userId);
         Task<Result> DeactivateUserAsync(Guid userId);
         Task<Result> ReactivateUserAsync(Guid userId);
+        Task<Result<RagUploadResult>> UploadRagDocumentAsync(
+            Guid uploadedBy,
+            string title,
+            string? category,
+            string filePath,
+            string contentText);
+        Task<Result<List<RagDocumentDto>>> GetRagDocumentsAsync();
     }
 }

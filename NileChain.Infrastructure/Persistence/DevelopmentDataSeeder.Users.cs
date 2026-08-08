@@ -52,7 +52,7 @@ public static partial class DevelopmentDataSeeder
     {
         var factories = new List<Factory>();
 
-        for (var i = 1; i <= 10; i++)
+        for (var i = 1; i <= SeedFactoryCount; i++)
         {
             var email = FactoryEmail(i);
             var existing = await db.Factory
@@ -65,18 +65,21 @@ public static partial class DevelopmentDataSeeder
                 continue;
             }
 
-            // Mix verified / unverified, active / inactive, email confirmed
-            var verified = i % 3 != 0;
-            var active = i != 9;
-            var emailConfirmed = i != 8;
+            // Mix verified / unverified, active / inactive, email confirmed (~70% verified)
+            var verified = i % 10 is not (3 or 7 or 9);
+            var active = i != 19;
+            var emailConfirmed = i != 18;
             var gov = Governorates[(i * 3) % Governorates.Length];
             var industry = FactoryIndustries[(i - 1) % FactoryIndustries.Length];
             var capacity = 200 + i * 45;
             var first = EgyptianFirstNames[rng.Next(EgyptianFirstNames.Length)];
             var last = EgyptianLastNames[rng.Next(EgyptianLastNames.Length)];
-            var name = string.Format(
-                FactoryNameTemplates[(i - 1) % FactoryNameTemplates.Length],
-                industry.Split('&')[0].Trim().Split(' ')[0]);
+            // Prefer Arabic display names for half the factories.
+            var name = i % 2 == 0
+                ? $"{ArabicFactoryStems[(i - 1) % ArabicFactoryStems.Length]} ({first} {last})"
+                : $"{string.Format(
+                    FactoryNameTemplates[(i - 1) % FactoryNameTemplates.Length],
+                    industry.Split('&')[0].Trim().Split(' ')[0])} ({first} {last})";
 
             var user = await EnsureUserAsync(
                 userManager,
@@ -93,7 +96,7 @@ public static partial class DevelopmentDataSeeder
             {
                 FactoryId = Guid.NewGuid(),
                 UserId = user.Id,
-                Name = $"{name} ({first} {last})",
+                Name = name,
                 Location = FactoryLocations[(i - 1) % FactoryLocations.Length],
                 Governorate = gov,
                 IndustryType =
@@ -137,7 +140,7 @@ public static partial class DevelopmentDataSeeder
         List<Certification> certifications,
         Random rng)
     {
-        for (var i = 1; i <= 25; i++)
+        for (var i = 1; i <= SeedFarmCount; i++)
         {
             var email = FarmEmail(i);
             var exists = await db.Farm.AnyAsync(f => f.User.Email == email);
@@ -150,22 +153,24 @@ public static partial class DevelopmentDataSeeder
             // 3: no crops
             // 4: expired certifications only
             // 5: poor risk / unverified
-            // 24: inactive user
-            // 25: unconfirmed email
-            var noCerts = i is 2 or 7 or 15;
+            // 49: inactive user
+            // 50: unconfirmed email
+            var noCerts = i is 2 or 7 or 15 or 33;
             var noCrops = i == 3;
-            var expiredCerts = i is 4 or 12;
-            var verified = i is not (5 or 11 or 18 or 22);
-            var active = i != 24;
-            var emailConfirmed = i != 25;
-            var profileComplete = i is not (3 or 5);
+            var expiredCerts = i is 4 or 12 or 28;
+            // ~70% verified
+            var verified = i is not (5 or 11 or 18 or 22 or 31 or 37 or 42 or 46 or 48);
+            var active = i != 49;
+            var emailConfirmed = i != 50;
+            var profileComplete = i is not (3 or 5 or 33);
 
+            // Realistic feddan range 20–500 (keep a few small/large edge cases)
             var size = i switch
             {
-                1 => 85m,
-                3 => 5m,
-                5 => 12m,
-                _ => 8m + (i * 3.7m) % 90m
+                1 => 220m,
+                3 => 18m,
+                5 => 28m,
+                _ => 20m + (i * 9.3m) % 480m
             };
 
             var risk = i switch
@@ -180,7 +185,10 @@ public static partial class DevelopmentDataSeeder
             var gov = Governorates[(i * 5 + 2) % Governorates.Length];
             var first = EgyptianFirstNames[(i * 3) % EgyptianFirstNames.Length];
             var last = EgyptianLastNames[(i * 5) % EgyptianLastNames.Length];
-            var farmName = $"{FarmNamePrefixes[(i - 1) % FarmNamePrefixes.Length]} Farm — {first} {last}";
+            // Prefer Arabic مزرعة … names for most farms (demo-friendly).
+            var farmName = i % 3 == 0
+                ? $"{FarmNamePrefixes[(i - 1) % FarmNamePrefixes.Length]} Farm — {first} {last}"
+                : $"مزرعة {ArabicFarmStems[(i - 1) % ArabicFarmStems.Length]} — {first} {last}";
 
             var user = await EnsureUserAsync(
                 userManager,

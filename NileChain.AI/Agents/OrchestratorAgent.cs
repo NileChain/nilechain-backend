@@ -406,13 +406,15 @@ public class OrchestratorAgent
                 {
                     existing.MatchScore = match.MatchScore;
                     existing.RiskScore = match.RiskScore;
+                    match.MatchId = existing.MatchId;
                     persistedCount++;
                     continue;
                 }
 
+                var matchId = Guid.NewGuid();
                 _context.FarmMatches.Add(new FarmMatch
                 {
-                    MatchId = Guid.NewGuid(),
+                    MatchId = matchId,
                     RequestId = requestId,
                     FarmId = match.FarmId,
                     MatchScore = match.MatchScore,
@@ -420,6 +422,7 @@ public class OrchestratorAgent
                     Status = FarmMatchStatus.Proposed,
                     CreatedAt = DateTime.UtcNow
                 });
+                match.MatchId = matchId;
                 persistedCount++;
             }
 

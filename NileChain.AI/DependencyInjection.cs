@@ -5,6 +5,7 @@ using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Services;
 using NileChain.AI.Sbg;
+using NileChain.Domain.Interfaces;
 
 namespace NileChain.AI;
 
@@ -70,6 +71,8 @@ public static class DependencyInjection
 
         services.AddScoped<RagPipeline>();
 
+        services.AddScoped<IRagIndexer, ChromaRagIndexer>();
+
         services.AddScoped<MatchingPlugin>();
         services.AddScoped<RiskPlugin>();
         services.AddScoped<ContractPlugin>();
@@ -81,6 +84,9 @@ public static class DependencyInjection
         services.AddScoped(sp =>
             new Lazy<ContractAgent>(() => sp.GetRequiredService<ContractAgent>()));
         services.AddScoped<OrchestratorAgent>();
+        services.AddScoped<ProactiveMonitorAgent>();
+
+        services.Configure<MonitoringOptions>(configuration.GetSection(MonitoringOptions.SectionName));
 
         services.AddScoped<AIOrchestrationService>();
 

@@ -130,6 +130,17 @@ public class FarmController : ControllerBase
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
+    [HttpGet("matches/{matchId:guid}/contract")]
+    public async Task<IActionResult> GetOrCreateContractForMatch(Guid matchId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.GetOrCreateContractForMatchAsync(Guid.Parse(userId), matchId);
+        return result.ToActionResult();
+    }
+
     [HttpGet("contracts")]
     public async Task<IActionResult> GetContracts()
     {
@@ -139,6 +150,54 @@ public class FarmController : ControllerBase
 
         var result = await _farmService.GetContractsAsync(Guid.Parse(userId));
         return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}")]
+    public async Task<IActionResult> GetContract(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.GetContractAsync(Guid.Parse(userId), contractId);
+        return result.ToActionResult();
+    }
+
+    [HttpPut("contracts/{contractId:guid}/approve")]
+    public async Task<IActionResult> ApproveContract(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.ApproveContractAsync(Guid.Parse(userId), contractId);
+        return result.ToActionResult();
+    }
+
+    [HttpPut("contracts/{contractId:guid}/reject")]
+    public async Task<IActionResult> RejectContract(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.RejectContractAsync(Guid.Parse(userId), contractId);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}/pdf")]
+    public async Task<IActionResult> DownloadContractPdf(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.GetContractPdfAsync(Guid.Parse(userId), contractId);
+        if (!result.IsSuccess)
+            return result.ToActionResult();
+
+        var (bytes, fileName) = result.Value!;
+        return File(bytes, "application/pdf", fileName);
     }
 
     [HttpGet("conversations")]

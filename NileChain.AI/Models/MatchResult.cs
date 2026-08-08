@@ -3,6 +3,8 @@ namespace NileChain.AI.Models;
 public class MatchResult
 {
     public Guid FarmId { get; set; }
+    /// <summary>Persisted FarmMatch id when available after orchestrator save.</summary>
+    public Guid? MatchId { get; set; }
     public string FarmName { get; set; } = string.Empty;
     public string Governorate { get; set; } = string.Empty;
     public decimal MatchScore { get; set; }

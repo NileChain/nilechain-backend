@@ -381,6 +381,7 @@ public sealed class OrchestrationToolsPlugin
                 selectedFarm = new MatchResult
                 {
                     FarmId = match.FarmId,
+                    MatchId = match.MatchId,
                     FarmName = match.Farm?.Name ?? "Farm",
                     Governorate = match.Farm?.Governorate ?? string.Empty,
                     MatchScore = match.MatchScore ?? 0m,
@@ -406,19 +407,43 @@ public sealed class OrchestrationToolsPlugin
             }
             else
             {
-                // Fallback: use top ranked candidate + request payload (match may not be persisted yet).
-                var top = _state.RankedCandidates.FirstOrDefault()
-                          ?? _state.LastSearchResults.FirstOrDefault();
-                if (top is null)
+                // LLM often passes farmId instead of FarmMatch.MatchId (matches not persisted yet).
+                // Prefer the farm the model named, not merely the top-ranked shortlist entry.
+                var byFarmId = ResolveCandidateByFarmId(matchId);
+                if (byFarmId is null)
                 {
-                    var noFarm = "No farm available to generate a contract for.";
+                    var farmEntity = await _db.Farm
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(f => f.FarmId == matchId);
+                    if (farmEntity is not null)
+                    {
+                        byFarmId = new MatchResult
+                        {
+                            FarmId = farmEntity.FarmId,
+                            FarmName = farmEntity.Name,
+                            Governorate = farmEntity.Governorate ?? string.Empty,
+                            RiskScore = farmEntity.RiskScore ?? 0m,
+                            IsVerified = farmEntity.IsVerified
+                        };
+                    }
+                }
+
+                if (byFarmId is null)
+                {
+                    var noFarm =
+                        "No FarmMatch or farm found for the given id. " +
+                        "Pass FarmMatch.MatchId, or a FarmId from SearchFarms results.";
                     _state.RecordTrail("GenerateContract", args, noFarm, blocked: true, blockReason: noFarm);
                     return JsonSerializer.Serialize(new { blocked = true, reason = noFarm });
                 }
 
-                selectedFarm = top;
+                selectedFarm = byFarmId;
                 agentRequest = _state.Request;
                 factoryName = _state.FactoryName ?? "Factory";
+                _logger.LogInformation(
+                    "GenerateContract resolved id {Id} as FarmId for farm {FarmName}",
+                    matchId,
+                    selectedFarm.FarmName);
             }
 
             string contractText;
@@ -451,29 +476,86 @@ public sealed class OrchestrationToolsPlugin
                 usedTemplateFallback = true;
             }
 
+            // Post-generation: farm name in draft must match the selected farm record.
+            if (!ContractMentionsFarmName(contractText, selectedFarm.FarmName))
+            {
+                _logger.LogWarning(
+                    "GenerateContract farm-name mismatch: expected '{ExpectedFarm}' in draft for id {Id}; regenerating with template",
+                    selectedFarm.FarmName,
+                    matchId);
+                contractText = BuildTemplateContract(selectedFarm.FarmName, factoryName, agentRequest);
+                usedTemplateFallback = true;
+                _state.RecordTrail(
+                    "GenerateContract",
+                    args,
+                    $"farm-name mismatch corrected via template; expected={selectedFarm.FarmName}");
+            }
+
             if (!ValidateContractFields(contractText, agentRequest, selectedFarm.FarmName, factoryName,
                     out var validationError))
             {
-                _state.ContractIncomplete = true;
-                _state.ContractValidationError = validationError;
-                _state.ContractDraft = contractText;
-                var incomplete = $"INCOMPLETE DRAFT rejected: {validationError}";
-                _state.RecordTrail("GenerateContract", args, incomplete, blocked: true, blockReason: incomplete);
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    incomplete = true,
+                _logger.LogWarning(
+                    "GenerateContract incomplete LLM draft ({Error}); regenerating with template for farm {Farm}",
                     validationError,
-                    usedTemplateFallback
-                });
+                    selectedFarm.FarmName);
+                contractText = BuildTemplateContract(selectedFarm.FarmName, factoryName, agentRequest);
+                usedTemplateFallback = true;
+                _state.RecordTrail(
+                    "GenerateContract",
+                    args,
+                    $"incomplete LLM draft corrected via template: {validationError}");
+
+                if (!ValidateContractFields(contractText, agentRequest, selectedFarm.FarmName, factoryName,
+                        out validationError))
+                {
+                    _state.ContractIncomplete = true;
+                    _state.ContractValidationError = validationError;
+                    _state.ContractDraft = contractText;
+                    var incomplete = $"INCOMPLETE DRAFT rejected: {validationError}";
+                    _state.RecordTrail("GenerateContract", args, incomplete, blocked: true, blockReason: incomplete);
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        incomplete = true,
+                        validationError,
+                        usedTemplateFallback,
+                        farmName = selectedFarm.FarmName
+                    });
+                }
             }
 
             _state.ContractDraft = contractText;
             _state.ContractIncomplete = false;
             _state.ContractValidationError = null;
 
+            // Persist Contract entity when we have a known matchId.
+            if (match is not null)
+            {
+                var existingContract = await _db.Contracts
+                    .FirstOrDefaultAsync(c => c.MatchId == match.MatchId);
+                if (existingContract is null)
+                {
+                    _db.Contracts.Add(new NileChain.Domain.Entities.Contract
+                    {
+                        ContractId = Guid.NewGuid(),
+                        MatchId = match.MatchId,
+                        GeneratedText = contractText,
+                        Status = NileChain.Domain.Enums.ContractStatus.PendingSignature,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+                else
+                {
+                    existingContract.GeneratedText = contractText;
+                    if (existingContract.Status == NileChain.Domain.Enums.ContractStatus.Cancelled)
+                        existingContract.Status = NileChain.Domain.Enums.ContractStatus.PendingSignature;
+                }
+
+                await _db.SaveChangesAsync();
+            }
+
             var summary =
-                $"ok; chars={contractText.Length}; templateFallback={usedTemplateFallback}";
+                $"ok; farm={selectedFarm.FarmName}; chars={contractText.Length}; templateFallback={usedTemplateFallback}";
             _state.RecordTrail("GenerateContract", args, summary);
             _logger.LogInformation("Tool GenerateContract | {Args} | {Summary}", args, summary);
 
@@ -481,8 +563,11 @@ public sealed class OrchestrationToolsPlugin
             {
                 success = true,
                 usedTemplateFallback,
+                farmName = selectedFarm.FarmName,
+                farmId = selectedFarm.FarmId,
                 contractPreview = Truncate(contractText, 400),
-                characterCount = contractText.Length
+                characterCount = contractText.Length,
+                matchId
             });
         }
         catch (Exception ex)
@@ -491,6 +576,32 @@ public sealed class OrchestrationToolsPlugin
             _logger.LogError(ex, "GenerateContract failed for {MatchId}", matchId);
             return JsonSerializer.Serialize(new { success = false, error = ex.Message });
         }
+    }
+
+    private MatchResult? ResolveCandidateByFarmId(Guid farmId) =>
+        _state.RankedCandidates.FirstOrDefault(m => m.FarmId == farmId)
+        ?? _state.LastSearchResults.FirstOrDefault(m => m.FarmId == farmId);
+
+    private static bool ContractMentionsFarmName(string contractText, string farmName)
+    {
+        if (string.IsNullOrWhiteSpace(farmName))
+            return false;
+        if (contractText.Contains(farmName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // LLM sometimes drops the " (Demo)" / " — Owner" suffix; accept the core name.
+        var core = farmName;
+        var paren = core.IndexOf('(', StringComparison.Ordinal);
+        if (paren > 0)
+            core = core[..paren].Trim();
+        var dash = core.IndexOf('—', StringComparison.Ordinal);
+        if (dash < 0)
+            dash = core.IndexOf('-', StringComparison.Ordinal);
+        if (dash > 0)
+            core = core[..dash].Trim();
+
+        return !string.IsNullOrWhiteSpace(core)
+               && contractText.Contains(core, StringComparison.OrdinalIgnoreCase);
     }
 
     private void MergeIntoRanked(List<MatchResult> matches)
@@ -530,9 +641,10 @@ public sealed class OrchestrationToolsPlugin
         }
 
         var missing = new List<string>();
-        if (!ContainsAny(contractText, farmName, "المورد", "الطرف الأول"))
+        // Farm / factory names must appear as exact strings (not just the generic party labels).
+        if (!ContainsAny(contractText, farmName))
             missing.Add("parties/farm");
-        if (!ContainsAny(contractText, factoryName, "المشتري", "الطرف الثاني"))
+        if (!ContainsAny(contractText, factoryName))
             missing.Add("parties/factory");
         if (!ContainsAny(contractText, request.CropType, "المحصول"))
             missing.Add("crop");

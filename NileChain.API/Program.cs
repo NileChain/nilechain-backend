@@ -1,11 +1,17 @@
 using NileChain.AI;
 using NileChain.AI.RAG;
 using NileChain.API.Extensions;
+using NileChain.API.Options;
 using NileChain.Application;
 using NileChain.Domain.Identity;
 using NileChain.Infrastructure;
 using NileChain.Infrastructure.Persistence;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
+
+var seedDemoOnly = args.Any(a =>
+    string.Equals(a, "--seed-demo", StringComparison.OrdinalIgnoreCase));
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,9 +26,28 @@ LoadDotEnv(Path.Combine(builder.Environment.ContentRootPath, ".env"));
 LoadDotEnv(Path.Combine(builder.Environment.ContentRootPath, "..", ".env"));
 builder.Configuration.AddEnvironmentVariables();
 
+// Heroku sets PORT; honor ASPNETCORE_URLS when already provided.
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
+{
+    var port = Environment.GetEnvironmentVariable("PORT");
+    if (!string.IsNullOrWhiteSpace(port))
+        builder.WebHost.UseUrls($"http://*:{port}");
+}
+
+ValidateProductionConfiguration(builder);
+
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    // Trust Heroku (and similar) reverse proxies in front of the dyno.
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddNileChainAI(builder.Configuration);
+builder.Services.AddHostedService<NileChain.API.HostedServices.ProactiveMonitorHostedService>();
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<NileChain.API.Filters.FluentValidationActionFilter>();
@@ -30,18 +55,22 @@ builder.Services.AddControllers(options =>
 builder.Services.AddScoped<NileChain.API.Filters.FluentValidationActionFilter>();
 builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
+
+var corsOrigins = ResolveCorsOrigins(builder.Configuration);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AngularPolicy", policy =>
     {
-        policy.WithOrigins("http://localhost:4200")
+        policy.WithOrigins(corsOrigins)
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
     });
 });
+
 var app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseGlobalExceptionMiddleware();
 
 using (var scope = app.Services.CreateScope())
@@ -50,28 +79,60 @@ using (var scope = app.Services.CreateScope())
     {
         var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>();
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-        await IdentitySeeder.SeedAsync(roleManager, userManager);
+        var seedLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("IdentitySeeder");
+        await IdentitySeeder.SeedAsync(
+            roleManager,
+            userManager,
+            app.Environment,
+            app.Configuration,
+            seedLogger);
 
-        if (app.Environment.IsDevelopment()
-            && !string.Equals(
-                Environment.GetEnvironmentVariable("SKIP_DEMO_SEED"),
-                "1",
-                StringComparison.OrdinalIgnoreCase))
+        var seedOnStartup = string.Equals(
+            Environment.GetEnvironmentVariable("SEED_DEMO_ON_STARTUP"),
+            "1",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (seedDemoOnly || seedOnStartup)
         {
+            var cs = app.Configuration.GetConnectionString("DefaultConnection") ?? "";
+            var host = DescribeSqlHost(cs);
+            Console.WriteLine("======== NileChain --seed-demo ========");
+            Console.WriteLine($"Connection source: DefaultConnection");
+            Console.WriteLine($"SQL host/db: {host}");
+            Console.WriteLine("Idempotent: yes (email / [SEED] / [DEMO] markers)");
+            Console.WriteLine("Destructive ops: none");
+            Console.WriteLine("=======================================");
+
             var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
             var logger = loggerFactory.CreateLogger("DevelopmentDataSeeder");
             var db = scope.ServiceProvider.GetRequiredService<NileChainDbContext>();
             await DevelopmentDataSeeder.SeedAsync(db, userManager, logger);
 
-            var chromaLogger = loggerFactory.CreateLogger("ChromaKnowledgeSeeder");
-            var chroma = scope.ServiceProvider.GetRequiredService<ChromaService>();
-            await ChromaKnowledgeSeeder.SeedAsync(chroma, chromaLogger);
+            try
+            {
+                var chromaLogger = loggerFactory.CreateLogger("ChromaKnowledgeSeeder");
+                var chroma = scope.ServiceProvider.GetRequiredService<ChromaService>();
+                await ChromaKnowledgeSeeder.SeedAsync(chroma, chromaLogger);
+            }
+            catch (Exception chromaEx)
+            {
+                logger.LogWarning(chromaEx, "Chroma seed skipped/failed (SQL seed still committed).");
+                Console.WriteLine($"[SEED] Chroma skipped/failed: {chromaEx.Message}");
+            }
+
+            if (seedDemoOnly)
+            {
+                Console.WriteLine("[SEED] --seed-demo complete. Exiting without starting HTTP server.");
+                return;
+            }
         }
         else if (app.Environment.IsDevelopment())
         {
             var startupLogger = app.Services.GetRequiredService<ILoggerFactory>()
                 .CreateLogger("Startup");
-            startupLogger.LogWarning("SKIP_DEMO_SEED=1 — skipping DevelopmentDataSeeder / Chroma seed.");
+            startupLogger.LogInformation(
+                "Skipping DevelopmentDataSeeder on startup. Run with --seed-demo or set SEED_DEMO_ON_STARTUP=1.");
         }
     }
     catch (Exception ex)
@@ -80,21 +141,124 @@ using (var scope = app.Services.CreateScope())
             .CreateLogger("Startup");
         startupLogger.LogError(
             ex,
-            "Startup seeding failed (DB/Chroma). API will still listen; data-dependent endpoints may fail.");
+            "Startup seeding failed (DB/Chroma).");
+        if (seedDemoOnly)
+        {
+            Console.Error.WriteLine($"[SEED] FATAL: {ex}");
+            Environment.ExitCode = 1;
+            return;
+        }
     }
 }
 
-app.MapOpenApi();
+if (seedDemoOnly)
+{
+    return;
+}
+
+// Development: always on. Production: only when OpenApi:Enabled=true (graduation demo opt-in).
+var openApiEnabled = app.Environment.IsDevelopment()
+    || app.Configuration.GetValue("OpenApi:Enabled", false);
+if (openApiEnabled)
+    app.MapOpenApi();
+
 // Scalar UI omitted: Application Control in some environments blocks Scalar.AspNetCore.dll load.
 // CORS before HTTPS redirection so browser preflight from Angular is not stripped by redirects.
 app.UseCors("AngularPolicy");
-app.UseHttpsRedirection();
+
+// Local HTTPS (launchSettings). On Heroku TLS terminates at the router; dyno listens on HTTP $PORT.
+if (app.Environment.IsDevelopment())
+    app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+static void ValidateProductionConfiguration(WebApplicationBuilder builder)
+{
+    if (!builder.Environment.IsProduction())
+        return;
+
+    var connection = builder.Configuration.GetConnectionString("DefaultConnection");
+    if (string.IsNullOrWhiteSpace(connection))
+    {
+        throw new InvalidOperationException(
+            "ConnectionStrings:DefaultConnection must be set in Production (e.g. ConnectionStrings__DefaultConnection).");
+    }
+
+    var jwtSecret = builder.Configuration["Jwt:Secret"];
+    if (string.IsNullOrWhiteSpace(jwtSecret)
+        || string.Equals(jwtSecret, "__SET_IN_LOCAL_CONFIG__", StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            "Jwt:Secret must be set to a strong secret in Production (e.g. Jwt__Secret).");
+    }
+}
+
+static string[] ResolveCorsOrigins(IConfiguration configuration)
+{
+    var origins = new List<string>();
+    var section = configuration.GetSection($"{CorsOptions.SectionName}:Origins");
+
+    // Prefer scalar Cors__Origins when set. appsettings.json keeps Cors:Origins:0/:1 children,
+    // so GetChildren() alone would ignore Heroku's Cors__Origins string and leave only localhost.
+    if (!string.IsNullOrWhiteSpace(section.Value))
+    {
+        origins.AddRange(
+            section.Value.Split(
+                [',', ';'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+    else
+    {
+        foreach (var child in section.GetChildren())
+        {
+            if (!string.IsNullOrWhiteSpace(child.Value))
+                origins.Add(child.Value.Trim());
+        }
+    }
+
+    var distinct = origins
+        .Select(o => o.Trim().TrimEnd('/'))
+        .Where(o => o.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    if (distinct.Length > 0)
+        return distinct;
+
+    return
+    [
+        "http://localhost:4200",
+        "http://127.0.0.1:4200"
+    ];
+}
+
+static string DescribeSqlHost(string connectionString)
+{
+    if (string.IsNullOrWhiteSpace(connectionString))
+        return "(missing DefaultConnection)";
+
+    string? server = null;
+    string? database = null;
+    foreach (var part in connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var idx = part.IndexOf('=');
+        if (idx <= 0) continue;
+        var key = part[..idx].Trim();
+        var value = part[(idx + 1)..].Trim();
+        if (key.Equals("Server", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("Data Source", StringComparison.OrdinalIgnoreCase))
+            server = value;
+        if (key.Equals("Database", StringComparison.OrdinalIgnoreCase)
+            || key.Equals("Initial Catalog", StringComparison.OrdinalIgnoreCase))
+            database = value;
+    }
+
+    return $"Server={server ?? "?"}; Database={database ?? "?"}";
+}
 
 static void LoadDotEnv(string path)
 {

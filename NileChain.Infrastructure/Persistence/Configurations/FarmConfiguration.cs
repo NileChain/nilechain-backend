@@ -14,6 +14,8 @@ public class FarmConfiguration : IEntityTypeConfiguration<Farm>
         builder.Property(f => f.Name).HasMaxLength(255).IsRequired();
         builder.Property(f => f.Location).HasMaxLength(255);
         builder.Property(f => f.Governorate).HasMaxLength(100);
+        builder.Property(f => f.Latitude).HasPrecision(9, 6);
+        builder.Property(f => f.Longitude).HasPrecision(9, 6);
         builder.Property(f => f.SizeInFeddans).HasPrecision(10, 2);
         builder.Property(f => f.SoilType).HasMaxLength(50).HasConversion<string>();
         builder.Property(f => f.RiskScore).HasPrecision(5, 2);

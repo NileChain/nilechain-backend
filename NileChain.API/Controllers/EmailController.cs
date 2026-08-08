@@ -1,11 +1,13 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using NileChain.Application.Dtos.Email;
 using NileChain.Application.Interfaces;
-using Microsoft.AspNetCore.Mvc;
 
 namespace NileChain.API.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
+    [Authorize(Roles = "Admin")]
     public class EmailController : ControllerBase
     {
         private readonly IEmailService _emailService;

@@ -16,7 +16,10 @@ public class FarmService : IFarmService
     private readonly IRepository<FarmDocument> _farmDocumentRepository;
     private readonly IRepository<FarmMatch> _farmMatchRepository;
     private readonly IRepository<Message> _messageRepository;
+    private readonly IRepository<Contract> _contractRepository;
+    private readonly IRepository<Notification> _notificationRepository;
     private readonly ICloudinaryService _cloudinaryService;
+    private readonly IContractPdfService _pdfService;
     private readonly IUnitOfWork _unitOfWork;
 
     public FarmService(
@@ -25,7 +28,10 @@ public class FarmService : IFarmService
         IRepository<FarmDocument> farmDocumentRepository,
         IRepository<FarmMatch> farmMatchRepository,
         IRepository<Message> messageRepository,
+        IRepository<Contract> contractRepository,
+        IRepository<Notification> notificationRepository,
         ICloudinaryService cloudinaryService,
+        IContractPdfService pdfService,
         IUnitOfWork unitOfWork)
     {
         _farmRepository = farmRepository;
@@ -33,7 +39,10 @@ public class FarmService : IFarmService
         _farmDocumentRepository = farmDocumentRepository;
         _farmMatchRepository = farmMatchRepository;
         _messageRepository = messageRepository;
+        _contractRepository = contractRepository;
+        _notificationRepository = notificationRepository;
         _cloudinaryService = cloudinaryService;
+        _pdfService = pdfService;
         _unitOfWork = unitOfWork;
     }
 
@@ -159,6 +168,8 @@ public class FarmService : IFarmService
             })
             .ToList();
 
+        var reliabilityTrend = BuildReliabilityTrend(matches, farm.RiskScore);
+
         var response = new FarmDashboardResponse
         {
             RiskScore = farm.RiskScore,
@@ -174,7 +185,8 @@ public class FarmService : IFarmService
                 new() { Label = "Buyer Ratings", Percentage = buyerRatingPercent }
             },
             RecentMatches = recentMatches,
-            ImprovementTips = improvementTips
+            ImprovementTips = improvementTips,
+            ReliabilityTrend = reliabilityTrend
         };
 
         return Result<FarmDashboardResponse>.Success(response);
@@ -215,6 +227,8 @@ public class FarmService : IFarmService
         farm.Name = request.Name;
         farm.Location = request.Location;
         farm.Governorate = request.Governorate;
+        farm.Latitude = request.Latitude;
+        farm.Longitude = request.Longitude;
         farm.SizeInFeddans = request.SizeInFeddans;
         farm.SoilType = request.SoilType;
 
@@ -331,7 +345,8 @@ public class FarmService : IFarmService
             MatchScore = m.MatchScore,
             RiskScore = m.RiskScore,
             Status = m.Status.ToString(),
-            CreatedAt = m.CreatedAt
+            CreatedAt = m.CreatedAt,
+            ContractId = m.Contract?.ContractId
         }).ToList();
 
         return Result<List<FarmMatchItemDto>>.Success(dtos);
@@ -350,11 +365,14 @@ public class FarmService : IFarmService
         if (match.Status != FarmMatchStatus.Proposed)
             return Result.Failure(FarmErrors.MatchNotProposed);
 
+        // Accepting a match is only allowed from the Contract Details page.
+        if (action.Equals("accept", StringComparison.OrdinalIgnoreCase))
+            return Result.Failure(new Error(
+                "Farm.AcceptViaContractOnly",
+                "Review and accept the contract from the Contract Details page."));
+
         switch (action.ToLowerInvariant())
         {
-            case "accept":
-                match.Status = FarmMatchStatus.Accepted;
-                break;
             case "reject":
                 match.Status = FarmMatchStatus.Rejected;
                 break;
@@ -363,9 +381,130 @@ public class FarmService : IFarmService
         }
 
         _farmMatchRepository.Update(match);
+
+        var existing = await _farmRepository.GetContractByMatchForFarmAsync(userId, matchId);
+        if (existing is not null &&
+            existing.Status is ContractStatus.PendingSignature or ContractStatus.Draft)
+        {
+            existing.Status = ContractStatus.Cancelled;
+            existing.SignedAt = null;
+            _contractRepository.Update(existing);
+        }
+
         await _unitOfWork.SaveChangesAsync();
 
         return Result.Success();
+    }
+
+    public async Task<Result<FarmContractDto>> GetOrCreateContractForMatchAsync(Guid userId, Guid matchId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.FarmNotFound);
+
+        var existing = await _farmRepository.GetContractByMatchForFarmAsync(userId, matchId);
+        if (existing is not null)
+            return Result<FarmContractDto>.Success(MapContract(existing));
+
+        var match = await _farmRepository.GetFarmMatchByIdAsync(userId, matchId);
+        if (match is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.MatchNotFound);
+
+        var factoryName = match.SupplyRequest?.Factory?.Name ?? "Factory";
+        var farmName = match.Farm?.Name ?? farm.Name;
+        var crop = match.SupplyRequest?.CropType?.Name ?? "Crop";
+        var qty = match.SupplyRequest?.QuantityTons ?? 0;
+        var price = match.SupplyRequest?.PricePerTon;
+        var delivery = match.SupplyRequest?.DeliveryDate;
+        var location = match.SupplyRequest?.Factory?.Location
+                       ?? match.SupplyRequest?.Factory?.Governorate
+                       ?? "—";
+        var quality = match.SupplyRequest?.QualitySpecs;
+
+        var text = BuildReviewContractText(
+            factoryName,
+            farmName,
+            crop,
+            qty,
+            price,
+            delivery,
+            location,
+            quality);
+
+        var contract = new Contract
+        {
+            ContractId = Guid.NewGuid(),
+            MatchId = match.MatchId,
+            GeneratedText = text,
+            Status = ContractStatus.PendingSignature,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        await _contractRepository.AddAsync(contract);
+        await _unitOfWork.SaveChangesAsync();
+
+        var created = await _farmRepository.GetContractForFarmAsync(userId, contract.ContractId);
+        return Result<FarmContractDto>.Success(MapContract(created ?? contract));
+    }
+
+    private static string BuildReviewContractText(
+        string factoryName,
+        string farmName,
+        string crop,
+        decimal qty,
+        decimal? price,
+        DateTime? delivery,
+        string location,
+        string? quality)
+    {
+        var priceLine = price is null
+            ? "Price per ton to be confirmed in writing."
+            : $"Price: {price:N0} EGP per ton.";
+        var deliveryLine = delivery is null
+            ? "Delivery date to be agreed by both parties."
+            : $"Delivery Date: {delivery:yyyy-MM-dd}.";
+        var qualityLine = string.IsNullOrWhiteSpace(quality)
+            ? "Goods must meet customary market quality standards for the crop."
+            : $"Quality Specifications: {quality}";
+
+        return
+            $"""
+            Agricultural Supply Contract
+
+            1. Parties
+            This agreement is entered into between {factoryName} (the "Factory" / Buyer) and {farmName} (the "Farm" / Supplier).
+
+            2. Scope
+            The Farm agrees to supply {qty:N2} tons of {crop} to the Factory under the terms of this contract.
+
+            3. Payment
+            {priceLine}
+            Payment shall be settled after delivery and inspection confirmation by the Factory.
+            Late payment may incur standard NileChain settlement remedies.
+
+            4. Delivery
+            {deliveryLine}
+            Delivery Location: {location}.
+            Risk of loss transfers upon accepted delivery at the stated location.
+
+            5. Responsibilities
+            The Farm shall ensure timely harvest, packaging, and dispatch.
+            The Factory shall provide receiving capacity and complete inspection within a reasonable period.
+
+            6. Quality Standards
+            {qualityLine}
+            Non-conforming shipments may be rejected or subject to price adjustment.
+
+            7. Force Majeure
+            Neither party is liable for delays caused by events beyond reasonable control, including extreme weather, provided prompt notice is given.
+
+            8. Termination
+            Either party may terminate for material breach if not cured within a reasonable cure period after written notice.
+            Unilateral rejection before signature cancels this draft without liability beyond reasonable reliance costs.
+
+            9. Signatures
+            By accepting this contract in NileChain, each party confirms they have reviewed all terms and agree to be bound.
+            """;
     }
 
     private FarmProfileResponse MapToProfileResponse(Farm farm)
@@ -376,6 +515,8 @@ public class FarmService : IFarmService
             Name = farm.Name,
             Location = farm.Location,
             Governorate = farm.Governorate,
+            Latitude = farm.Latitude,
+            Longitude = farm.Longitude,
             SizeInFeddans = farm.SizeInFeddans,
             SoilType = farm.SoilType?.ToString(),
             Phone = farm.User.PhoneNumber,
@@ -402,6 +543,39 @@ public class FarmService : IFarmService
         };
     }
 
+    private static List<ReliabilityTrendPoint> BuildReliabilityTrend(
+        IEnumerable<FarmMatch> matches,
+        decimal? currentRiskScore)
+    {
+        var points = matches
+            .Where(m => m.RiskScore.HasValue)
+            .OrderBy(m => m.CreatedAt)
+            .Select(m => new ReliabilityTrendPoint
+            {
+                Value = Math.Clamp(Math.Round(m.RiskScore!.Value, 0), 0, 100),
+                Label = m.CreatedAt.ToString("dd MMM")
+            })
+            .ToList();
+
+        if (currentRiskScore.HasValue)
+        {
+            var current = Math.Clamp(Math.Round(currentRiskScore.Value, 0), 0, 100);
+            if (points.Count == 0 || points[^1].Value != current)
+            {
+                points.Add(new ReliabilityTrendPoint
+                {
+                    Value = current,
+                    Label = DateTime.UtcNow.ToString("dd MMM")
+                });
+            }
+        }
+
+        if (points.Count > 12)
+            points = points.TakeLast(12).ToList();
+
+        return points;
+    }
+
     private static int CalculateCompletionPercent(Farm farm)
     {
         var fields = 0;
@@ -425,23 +599,161 @@ public class FarmService : IFarmService
             return Result<List<FarmContractDto>>.Failure(FarmErrors.FarmNotFound);
 
         var contracts = await _farmRepository.GetFarmContractsAsync(userId);
+        return Result<List<FarmContractDto>>.Success(contracts.Select(MapContract).ToList());
+    }
 
-        var dtos = contracts.Select(c => new FarmContractDto
+    public async Task<Result<FarmContractDto>> GetContractAsync(Guid userId, Guid contractId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.FarmNotFound);
+
+        var contract = await _farmRepository.GetContractForFarmAsync(userId, contractId);
+        if (contract is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.ContractNotFound);
+
+        return Result<FarmContractDto>.Success(MapContract(contract));
+    }
+
+    public async Task<Result<FarmContractDto>> ApproveContractAsync(Guid userId, Guid contractId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.FarmNotFound);
+
+        var contract = await _farmRepository.GetContractForFarmAsync(userId, contractId);
+        if (contract is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.ContractNotFound);
+
+        if (contract.Status is not (ContractStatus.PendingSignature or ContractStatus.Draft))
+            return Result<FarmContractDto>.Failure(FarmErrors.ContractNotPending);
+
+        contract.Status = ContractStatus.Signed;
+        contract.SignedAt = DateTime.UtcNow;
+        _contractRepository.Update(contract);
+
+        if (contract.FarmMatch is { Status: FarmMatchStatus.Proposed } match)
+        {
+            match.Status = FarmMatchStatus.Accepted;
+            _farmMatchRepository.Update(match);
+        }
+
+        var factoryUserId = contract.FarmMatch?.SupplyRequest?.Factory?.UserId;
+        if (factoryUserId is Guid uid && uid != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = uid,
+                Title = "Contract approved by farm",
+                Message = $"{farm.Name} approved and signed the supply contract.",
+                Type = "Contract",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+        return Result<FarmContractDto>.Success(MapContract(contract));
+    }
+
+    public async Task<Result<FarmContractDto>> RejectContractAsync(Guid userId, Guid contractId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.FarmNotFound);
+
+        var contract = await _farmRepository.GetContractForFarmAsync(userId, contractId);
+        if (contract is null)
+            return Result<FarmContractDto>.Failure(FarmErrors.ContractNotFound);
+
+        if (contract.Status is not (ContractStatus.PendingSignature or ContractStatus.Draft))
+            return Result<FarmContractDto>.Failure(FarmErrors.ContractNotPending);
+
+        contract.Status = ContractStatus.Cancelled;
+        contract.SignedAt = null;
+        _contractRepository.Update(contract);
+
+        if (contract.FarmMatch is { Status: FarmMatchStatus.Proposed } match)
+        {
+            match.Status = FarmMatchStatus.Rejected;
+            _farmMatchRepository.Update(match);
+        }
+
+        var factoryUserId = contract.FarmMatch?.SupplyRequest?.Factory?.UserId;
+        if (factoryUserId is Guid uid && uid != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = uid,
+                Title = "Contract rejected by farm",
+                Message = $"{farm.Name} rejected the supply contract.",
+                Type = "Contract",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+        return Result<FarmContractDto>.Success(MapContract(contract));
+    }
+
+    public async Task<Result<(byte[] PdfBytes, string FileName)>> GetContractPdfAsync(
+        Guid userId,
+        Guid contractId)
+    {
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null)
+            return Result<(byte[], string)>.Failure(FarmErrors.FarmNotFound);
+
+        var contract = await _farmRepository.GetContractForFarmAsync(userId, contractId);
+        if (contract is null)
+            return Result<(byte[], string)>.Failure(FarmErrors.ContractNotFound);
+
+        var text = contract.GeneratedText ?? string.Empty;
+        var farmName = contract.FarmMatch?.Farm?.Name ?? farm.Name;
+        var factoryName = contract.FarmMatch?.SupplyRequest?.Factory?.Name ?? "Factory";
+        var bytes = _pdfService.GeneratePdf(
+            "Agricultural Supply Contract",
+            text,
+            farmName,
+            factoryName,
+            contract.Status == ContractStatus.Signed);
+
+        contract.PdfUrl = $"/api/farm/contracts/{contract.ContractId}/pdf";
+        _contractRepository.Update(contract);
+        await _unitOfWork.SaveChangesAsync();
+
+        return Result<(byte[], string)>.Success((bytes, $"contract-{contract.ContractId:N}.pdf"));
+    }
+
+    private static FarmContractDto MapContract(Contract c)
+    {
+        var factory = c.FarmMatch?.SupplyRequest?.Factory;
+        var farm = c.FarmMatch?.Farm;
+        var supply = c.FarmMatch?.SupplyRequest;
+        return new FarmContractDto
         {
             ContractId = c.ContractId,
             MatchId = c.MatchId,
-            FactoryName = c.FarmMatch.SupplyRequest?.Factory?.Name ?? "Unknown",
-            FactoryLocation = c.FarmMatch.SupplyRequest?.Factory?.Location,
-            CropName = c.FarmMatch.SupplyRequest?.CropType?.Name ?? "Unknown",
-            QuantityTons = c.FarmMatch.SupplyRequest?.QuantityTons ?? 0,
-            PricePerTon = c.FarmMatch.SupplyRequest?.PricePerTon,
-            DeliveryDate = c.FarmMatch.SupplyRequest?.DeliveryDate,
+            FactoryName = factory?.Name ?? "Unknown",
+            FactoryLocation = factory?.Location ?? factory?.Governorate,
+            FarmName = farm?.Name ?? "Unknown",
+            CropName = supply?.CropType?.Name ?? "Unknown",
+            QuantityTons = supply?.QuantityTons ?? 0,
+            PricePerTon = supply?.PricePerTon,
+            DeliveryDate = supply?.DeliveryDate,
+            DeliveryLocation = factory?.Location ?? factory?.Governorate,
+            GeneratedText = c.GeneratedText,
+            PdfUrl = c.PdfUrl,
             Status = c.Status.ToString(),
             CreatedAt = c.CreatedAt,
-            SignedAt = c.SignedAt
-        }).ToList();
-
-        return Result<List<FarmContractDto>>.Success(dtos);
+            SignedAt = c.SignedAt,
+            UpdatedAt = c.SignedAt ?? c.CreatedAt,
+            MatchScore = c.FarmMatch?.MatchScore,
+            RiskScore = c.FarmMatch?.RiskScore
+        };
     }
 
     public async Task<Result<List<ConversationDto>>> GetConversationsAsync(Guid userId)

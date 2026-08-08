@@ -25,36 +25,43 @@ public static class SbgReactOrchestrator
         string systemPrompt,
         string userGoal,
         ILogger logger,
+        CancellationToken cancellationToken = default) =>
+        await RunAsync(
+            chat,
+            kernel,
+            systemPrompt,
+            userGoal,
+            logger,
+            pluginName: "OrchestrationTools",
+            toolGuide: DefaultOrchestrationToolGuide,
+            knownToolsHint:
+                "SearchFarms, WidenSearchRadius, CalculateRiskScore, FlagLowRiskWarning, " +
+                "ProposeNextBestMatch, GenerateContract",
+            maxSteps: MaxSteps,
+            cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Shared SBG JSON ReAct loop for any plugin (orchestration, monitoring, etc.).
+    /// </summary>
+    public static async Task<string> RunAsync(
+        IChatCompletionService chat,
+        Kernel kernel,
+        string systemPrompt,
+        string userGoal,
+        ILogger logger,
+        string pluginName,
+        string toolGuide,
+        string knownToolsHint,
+        int maxSteps,
         CancellationToken cancellationToken = default)
     {
-        var toolGuide = """
-
-            You MUST drive the workflow by calling tools via JSON only.
-            On every turn reply with EXACTLY one JSON object (no markdown fences):
-
-            To call a tool:
-            {"tool":"SearchFarms","arguments":{"cropType":"Wheat","governorate":"Aswan","qualitySpecs":"Grade A","radiusKm":50}}
-
-            Available tools and argument keys:
-            - SearchFarms: cropType, governorate, qualitySpecs, radiusKm
-            - WidenSearchRadius: (no arguments, use {})
-            - CalculateRiskScore: farmId (GUID string)
-            - FlagLowRiskWarning: farmId (GUID string), riskScore (int)
-            - ProposeNextBestMatch: (no arguments, use {})
-            - GenerateContract: farmId (GUID string)
-
-            When the workflow is finished (or blocked waiting for factory confirmation):
-            {"done":true,"summary":"short plain-text summary for the factory"}
-
-            Never invent farm IDs or risk scores — only use values returned by tools.
-            """;
-
         var history = new ChatHistory(systemPrompt + toolGuide);
         history.AddUserMessage(userGoal);
 
         string? finalSummary = null;
+        var steps = maxSteps <= 0 ? MaxSteps : maxSteps;
 
-        for (var step = 0; step < MaxSteps; step++)
+        for (var step = 0; step < steps; step++)
         {
             var response = await chat.GetChatMessageContentAsync(
                 history,
@@ -87,12 +94,11 @@ public static class SbgReactOrchestrator
                 continue;
             }
 
-            var plugin = kernel.Plugins["OrchestrationTools"];
-            if (!plugin.TryGetFunction(action.Tool, out var function))
+            if (!kernel.Plugins.TryGetPlugin(pluginName, out var plugin)
+                || !plugin.TryGetFunction(action.Tool, out var function))
             {
                 history.AddUserMessage(
-                    $"Unknown tool '{action.Tool}'. Use one of: SearchFarms, WidenSearchRadius, " +
-                    "CalculateRiskScore, FlagLowRiskWarning, ProposeNextBestMatch, GenerateContract.");
+                    $"Unknown tool '{action.Tool}'. Use one of: {knownToolsHint}.");
                 continue;
             }
 
@@ -123,6 +129,28 @@ public static class SbgReactOrchestrator
         return finalSummary
                ?? "Orchestration finished without an explicit done summary.";
     }
+
+    private const string DefaultOrchestrationToolGuide = """
+
+            You MUST drive the workflow by calling tools via JSON only.
+            On every turn reply with EXACTLY one JSON object (no markdown fences):
+
+            To call a tool:
+            {"tool":"SearchFarms","arguments":{"cropType":"Wheat","governorate":"Aswan","qualitySpecs":"Grade A","radiusKm":50}}
+
+            Available tools and argument keys:
+            - SearchFarms: cropType, governorate, qualitySpecs, radiusKm
+            - WidenSearchRadius: currentRadiusKm (int)
+            - CalculateRiskScore: farmId (GUID string)
+            - FlagLowRiskWarning: farmId (GUID string), riskScore (int)
+            - ProposeNextBestMatch: rejectedFarmId (GUID string), requestId (GUID string)
+            - GenerateContract: matchId (GUID — prefer FarmMatch.MatchId; FarmId from SearchFarms is also accepted)
+
+            When the workflow is finished (or blocked waiting for factory confirmation):
+            {"done":true,"summary":"short plain-text summary for the factory"}
+
+            Never invent farm IDs or risk scores — only use values returned by tools.
+            """;
 
     private static bool TryParseAction(string content, out ReactAction action, out string error)
     {

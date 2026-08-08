@@ -10,6 +10,14 @@ public class FarmDashboardResponse
     public List<RiskBreakdownItem> RiskBreakdown { get; set; } = new();
     public List<RecentMatchItem> RecentMatches { get; set; } = new();
     public List<ImprovementTip> ImprovementTips { get; set; } = new();
+    /// <summary>Chronological reliability/risk scores (0–100) for sparkline.</summary>
+    public List<ReliabilityTrendPoint> ReliabilityTrend { get; set; } = new();
+}
+
+public class ReliabilityTrendPoint
+{
+    public decimal Value { get; set; }
+    public string Label { get; set; } = string.Empty;
 }
 
 public class RiskBreakdownItem

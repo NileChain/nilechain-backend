@@ -17,7 +17,12 @@ public interface IFarmService
     Task<Result> DeleteCropAsync(Guid userId, Guid cropTypeId);
     Task<Result<List<FarmMatchItemDto>>> GetMatchesAsync(Guid userId, string? status, Guid? cropTypeId);
     Task<Result> RespondToMatchAsync(Guid userId, Guid matchId, string action);
+    Task<Result<FarmContractDto>> GetOrCreateContractForMatchAsync(Guid userId, Guid matchId);
     Task<Result<List<FarmContractDto>>> GetContractsAsync(Guid userId);
+    Task<Result<FarmContractDto>> GetContractAsync(Guid userId, Guid contractId);
+    Task<Result<FarmContractDto>> ApproveContractAsync(Guid userId, Guid contractId);
+    Task<Result<FarmContractDto>> RejectContractAsync(Guid userId, Guid contractId);
+    Task<Result<(byte[] PdfBytes, string FileName)>> GetContractPdfAsync(Guid userId, Guid contractId);
     Task<Result<List<ConversationDto>>> GetConversationsAsync(Guid userId);
     Task<Result<List<MessageDto>>> GetMessagesAsync(Guid userId, Guid matchId);
     Task<Result> SendMessageAsync(Guid userId, Guid matchId, string content);

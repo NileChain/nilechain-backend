@@ -38,6 +38,7 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
     public async Task<List<FarmMatch>> GetFarmMatchesAsync(Guid userId, string? status, Guid? cropTypeId)
     {
         var query = Context.FarmMatches
+            .Include(fm => fm.Contract)
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.Factory)
             .Include(fm => fm.SupplyRequest)
@@ -55,6 +56,16 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
             .ToListAsync();
     }
 
+    public async Task<FarmMatch?> GetFarmMatchByIdAsync(Guid userId, Guid matchId) =>
+        await Context.FarmMatches
+            .Include(fm => fm.Contract)
+            .Include(fm => fm.Farm)
+            .Include(fm => fm.SupplyRequest)
+                .ThenInclude(sr => sr.Factory)
+            .Include(fm => fm.SupplyRequest)
+                .ThenInclude(sr => sr.CropType)
+            .FirstOrDefaultAsync(fm => fm.MatchId == matchId && fm.Farm.UserId == userId);
+
     public async Task<IReadOnlyList<Farm>> GetVerifiedFarmsByCropAsync(Guid cropTypeId, string? governorate) =>
         await Context.Farm
             .Where(f => f.IsVerified && f.CropTypes.Any(c => c.CropTypeId == cropTypeId))
@@ -64,6 +75,8 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
     public async Task<List<Contract>> GetFarmContractsAsync(Guid userId) =>
         await Context.Contracts
             .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.Farm)
+            .Include(c => c.FarmMatch)
                 .ThenInclude(fm => fm.SupplyRequest)
                     .ThenInclude(sr => sr.Factory)
             .Include(c => c.FarmMatch)
@@ -72,6 +85,32 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
             .Where(c => c.FarmMatch.Farm.UserId == userId)
             .OrderByDescending(c => c.CreatedAt)
             .ToListAsync();
+
+    public async Task<Contract?> GetContractForFarmAsync(Guid userId, Guid contractId) =>
+        await Context.Contracts
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.Farm)
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.SupplyRequest)
+                    .ThenInclude(sr => sr.Factory)
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.SupplyRequest)
+                    .ThenInclude(sr => sr.CropType)
+            .FirstOrDefaultAsync(c =>
+                c.ContractId == contractId && c.FarmMatch.Farm.UserId == userId);
+
+    public async Task<Contract?> GetContractByMatchForFarmAsync(Guid userId, Guid matchId) =>
+        await Context.Contracts
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.Farm)
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.SupplyRequest)
+                    .ThenInclude(sr => sr.Factory)
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.SupplyRequest)
+                    .ThenInclude(sr => sr.CropType)
+            .FirstOrDefaultAsync(c =>
+                c.MatchId == matchId && c.FarmMatch.Farm.UserId == userId);
 
     public async Task<List<FarmMatch>> GetConversationsAsync(Guid userId) =>
         await Context.FarmMatches

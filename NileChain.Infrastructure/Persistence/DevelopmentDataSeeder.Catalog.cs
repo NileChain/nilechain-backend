@@ -12,6 +12,13 @@ public static partial class DevelopmentDataSeeder
     private const string MarketPriceSource = "DevelopmentSeed";
     private const string SuperAdminEmail = "seed.superadmin@nilechain.dev";
 
+    /// <summary>Target counts for the expanded MonsterASP demo corpus.</summary>
+    private const int SeedFarmCount = 50;
+    private const int SeedFactoryCount = 20;
+    private const int SeedSupplyRequestCount = 40;
+    private const int SeedMatchTarget = 180;
+    private const int SeedContractTarget = 80;
+
     private static readonly string[] AdminEmails =
     [
         "seed.admin1@nilechain.dev",
@@ -61,7 +68,35 @@ public static partial class DevelopmentDataSeeder
         "Palm Grove", "Golden Harvest", "Riverbank", "Oasis", "Sahara Edge",
         "Lotus Fields", "Pharaoh Crops", "Upper Nile", "Lower Delta", "Cotton Road",
         "Wheat Crown", "Emerald Acre", "Blue Nile", "Red Earth", "Silver Canal",
-        "Amber Soil", "Crescent Moon", "Desert Bloom", "Valley Star", "Harvest Gate"
+        "Amber Soil", "Crescent Moon", "Desert Bloom", "Valley Star", "Harvest Gate",
+        "Canal View", "Barley Ridge", "Fig Orchard", "Clover Bend", "Silt Haven",
+        "Papyrus Bank", "Sunflower Reach", "Mint Grove", "Date Palm", "Reed Marsh",
+        "Ivory Acre", "Olive Slope", "Cumin Flat", "Sesame Field", "Basil Grove",
+        "Thyme Hill", "Anise Bend", "Fenugreek Lot", "Carob Grove", "Mulberry Row",
+        "Pomegranate Gate", "Guava Lane", "Melon Shore", "Pepper Patch", "Okra Bend"
+    ];
+
+    /// <summary>Arabic farm name stems used with مزرعة … pattern.</summary>
+    private static readonly string[] ArabicFarmStems =
+    [
+        "النيل الكبرى", "الوادي الأخضر", "الدلتا الذهبية", "الحصاد المبارك",
+        "الأرض الطيبة", "نسيم النيل", "واحة الفيوم", "قمح الشرقية",
+        "أرز الدقهلية", "قصب المنيا", "طمي البحيرة", "بساتين الجيزة",
+        "مزارع الغربية", "خير المنوفية", "صعيد أسوان", "خيرات سوهاج",
+        "نخيل الوادي", "سنابل القمح", "حقول الذرة", "بستان البرتقال",
+        "مزارع القطن", "واحة السيوة", "سهل الطينة", "جزيرة الذهب",
+        "عيون الشمس"
+    ];
+
+    private static readonly string[] ArabicFactoryStems =
+    [
+        "مطاحن النيل", "تصنيع الدلتا للأغذية", "تكرير السكر المصري",
+        "تعبئة الإسكندرية", "نشا وصناعات غذائية", "حبوب القاهرة",
+        "صناعات مصر الغذائية", "معاصر الزيوت الحديثة", "تجميد الخضر",
+        "عصائر النيل", "أرز الدقهلية", "صناعات الفراعنة",
+        "صادرات الأهرام", "منتجات اللوتس", "مصانع الصعيد",
+        "تعبئة بورسعيد", "أغذية أكتوبر", "تصنيع العاشر",
+        "مطاحن الوجه البحري", "صناعات دمياط الغذائية"
     ];
 
     private static readonly string[] FarmLocations =
@@ -91,7 +126,8 @@ public static partial class DevelopmentDataSeeder
     [
         "Food Processing", "Canning & Packaging", "Flour Milling", "Dairy & Juice",
         "Frozen Vegetables", "Tomato Paste", "Rice Milling", "Oil Extraction",
-        "Snack Foods", "Export Packing"
+        "Snack Foods", "Export Packing", "Starch Production", "Sugar Refining",
+        "Grain Processing", "Beverage Bottling", "Feed Milling"
     ];
 
     private static readonly string[] FactoryLocations =
@@ -264,8 +300,8 @@ public static partial class DevelopmentDataSeeder
     private static string FactoryEmail(int index) => $"seed.factory{index:D2}@nilechain.dev";
 
     private static IEnumerable<string> AllSeedFarmEmails() =>
-        Enumerable.Range(1, 25).Select(FarmEmail);
+        Enumerable.Range(1, SeedFarmCount).Select(FarmEmail);
 
     private static IEnumerable<string> AllSeedFactoryEmails() =>
-        Enumerable.Range(1, 10).Select(FactoryEmail);
+        Enumerable.Range(1, SeedFactoryCount).Select(FactoryEmail);
 }

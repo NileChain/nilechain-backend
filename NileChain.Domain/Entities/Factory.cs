@@ -9,6 +9,8 @@ public class Factory
     public string Name { get; set; } = default!;
     public string? Location { get; set; }
     public string? Governorate { get; set; }
+    public decimal? Latitude { get; set; }
+    public decimal? Longitude { get; set; }
     public string? IndustryType { get; set; }
     public decimal AverageRating { get; set; }
     public int RatingCount { get; set; }

@@ -14,6 +14,8 @@ public class FactoryConfiguration : IEntityTypeConfiguration<Factory>
         builder.Property(f => f.Name).HasMaxLength(255).IsRequired();
         builder.Property(f => f.Location).HasMaxLength(255);
         builder.Property(f => f.Governorate).HasMaxLength(100);
+        builder.Property(f => f.Latitude).HasPrecision(9, 6);
+        builder.Property(f => f.Longitude).HasPrecision(9, 6);
         builder.Property(f => f.IndustryType).HasMaxLength(100);
         builder.Property(f => f.AverageRating).HasPrecision(3, 2);
 

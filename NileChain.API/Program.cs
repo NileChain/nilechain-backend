@@ -202,25 +202,26 @@ static string[] ResolveCorsOrigins(IConfiguration configuration)
     var origins = new List<string>();
     var section = configuration.GetSection($"{CorsOptions.SectionName}:Origins");
 
-    var children = section.GetChildren().ToList();
-    if (children.Count > 0)
+    // Prefer scalar Cors__Origins when set. appsettings.json keeps Cors:Origins:0/:1 children,
+    // so GetChildren() alone would ignore Heroku's Cors__Origins string and leave only localhost.
+    if (!string.IsNullOrWhiteSpace(section.Value))
     {
-        foreach (var child in children)
-        {
-            if (!string.IsNullOrWhiteSpace(child.Value))
-                origins.Add(child.Value.Trim());
-        }
-    }
-    else if (!string.IsNullOrWhiteSpace(section.Value))
-    {
-        // Heroku-friendly single config var: Cors__Origins=https://a.com,https://b.com
         origins.AddRange(
             section.Value.Split(
                 [',', ';'],
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
     }
+    else
+    {
+        foreach (var child in section.GetChildren())
+        {
+            if (!string.IsNullOrWhiteSpace(child.Value))
+                origins.Add(child.Value.Trim());
+        }
+    }
 
     var distinct = origins
+        .Select(o => o.Trim().TrimEnd('/'))
         .Where(o => o.Length > 0)
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();

@@ -1,1 +1,1 @@
-web: cd $HOME/heroku_output && ./NileChain.API
+web: cd NileChain.API/bin/publish && ./NileChain.API --urls http://*:$PORT

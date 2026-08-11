@@ -12,7 +12,7 @@ public class MatchingAgent
         _plugin = plugin;
     }
 
-    public async Task<List<MatchResult>> RunAsync(AgentRequest request)
+    public async Task<MatchSearchResult> RunAsync(AgentRequest request)
     {
         return await _plugin.FindMatchingFarms(request.RequestId);
     }

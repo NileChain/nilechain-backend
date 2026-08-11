@@ -1,3 +1,5 @@
+using NileChain.Application.Common;
+
 namespace NileChain.AI.RAG;
 
 public class RagPipeline
@@ -9,31 +11,35 @@ public class RagPipeline
         _chromaService = chromaService;
     }
 
-    public async Task<string> GetQualityStandardsAsync(string cropType)
+    public async Task<ChromaLookupResult> GetQualityStandardsAsync(string cropType)
     {
         return await _chromaService.QueryAsync(
             $"معايير جودة محصول {cropType} للاستخدام الصناعي",
             nResults: 2);
     }
 
-    public async Task<string> GetContractTemplateAsync(string cropType)
+    public async Task<ChromaLookupResult> GetContractTemplateAsync(string cropType)
     {
         return await _chromaService.QueryAsync(
             $"قالب عقد توريد {cropType} بنود قانونية",
             nResults: 2);
     }
 
-    public async Task<string> GetAgriScienceAsync(string cropType)
+    public async Task<ChromaLookupResult> GetAgriScienceAsync(string cropType)
     {
         return await _chromaService.QueryAsync(
             $"علوم زراعية وممارسات زراعية لمحصول {cropType}",
             nResults: 2);
     }
 
-    public async Task<string> GetCombinedContextAsync(string query)
+    /// <summary>
+    /// Combined RAG context. When Chroma is down, <see cref="ChromaLookupResult.IsAvailable"/> is false
+    /// and Content is the client-safe "AI service unavailable" message.
+    /// </summary>
+    public async Task<ChromaLookupResult> GetCombinedContextAsync(string query)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return string.Empty;
+            return ChromaLookupResult.Empty();
 
         try
         {
@@ -47,31 +53,33 @@ public class RagPipeline
             var contractResults = await contractTask;
             var agriScienceResults = await agriScienceTask;
 
+            if (!qualityResults.IsAvailable
+                || !contractResults.IsAvailable
+                || !agriScienceResults.IsAvailable)
+            {
+                return ChromaLookupResult.Unavailable();
+            }
+
             var sections = new List<string>();
 
-            if (!string.IsNullOrWhiteSpace(qualityResults))
-            {
-                sections.Add(FormatSection("QUALITY STANDARDS", qualityResults));
-            }
+            if (!string.IsNullOrWhiteSpace(qualityResults.Content))
+                sections.Add(FormatSection("QUALITY STANDARDS", qualityResults.Content));
 
-            if (!string.IsNullOrWhiteSpace(contractResults))
-            {
-                sections.Add(FormatSection("CONTRACT TEMPLATE", contractResults));
-            }
+            if (!string.IsNullOrWhiteSpace(contractResults.Content))
+                sections.Add(FormatSection("CONTRACT TEMPLATE", contractResults.Content));
 
-            if (!string.IsNullOrWhiteSpace(agriScienceResults))
-            {
-                sections.Add(FormatSection("AGRI SCIENCE", agriScienceResults));
-            }
+            if (!string.IsNullOrWhiteSpace(agriScienceResults.Content))
+                sections.Add(FormatSection("AGRI SCIENCE", agriScienceResults.Content));
 
             if (sections.Count == 0)
-                return string.Empty;
+                return ChromaLookupResult.Empty();
 
-            return string.Join(Environment.NewLine + Environment.NewLine, sections);
+            return ChromaLookupResult.Ok(
+                string.Join(Environment.NewLine + Environment.NewLine, sections));
         }
         catch
         {
-            return string.Empty;
+            return ChromaLookupResult.Unavailable();
         }
     }
 

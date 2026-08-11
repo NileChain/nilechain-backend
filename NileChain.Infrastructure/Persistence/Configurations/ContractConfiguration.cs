@@ -14,14 +14,17 @@ public class ContractConfiguration : IEntityTypeConfiguration<Contract>
 
         builder.Property(c => c.Status)
             .HasConversion<string>()
-            .HasMaxLength(20);
+            .HasMaxLength(40);
 
         builder.HasIndex(c => c.MatchId).IsUnique();
+
+        builder.Property(c => c.RowVersion)
+            .IsRowVersion();
 
         builder.HasOne(c => c.FarmMatch)
             .WithOne(fm => fm.Contract)
             .HasForeignKey<Contract>(c => c.MatchId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasMany(c => c.RagDocuments)
             .WithMany(d => d.Contracts)

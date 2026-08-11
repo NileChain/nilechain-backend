@@ -22,11 +22,13 @@ public class CropTypesController : ControllerBase
     public async Task<IActionResult> GetAll()
     {
         var cropTypes = await _cropTypeRepository.GetAllAsync();
-        var result = cropTypes.Select(c => new CropTypeDto
-        {
-            CropTypeId = c.CropTypeId,
-            Name = c.Name
-        }).ToList();
+        var result = cropTypes
+            .OrderBy(c => c.Name)
+            .Select(c => new CropTypeDto
+            {
+                CropTypeId = c.CropTypeId,
+                Name = c.Name
+            }).ToList();
 
         return Ok(result);
     }

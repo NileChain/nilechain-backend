@@ -17,6 +17,10 @@ public class FarmContractDto
     public string Status { get; set; } = default!;
     public DateTime CreatedAt { get; set; }
     public DateTime? SignedAt { get; set; }
+    public bool FactorySigned { get; set; }
+    public bool FarmSigned { get; set; }
+    public DateTime? FactorySignedAt { get; set; }
+    public DateTime? FarmSignedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
     public decimal? MatchScore { get; set; }
     public decimal? RiskScore { get; set; }

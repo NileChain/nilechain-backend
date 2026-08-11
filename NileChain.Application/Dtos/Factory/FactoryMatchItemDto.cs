@@ -13,6 +13,10 @@ public class FactoryMatchItemDto
     public decimal FarmAverageRating { get; set; }
     public decimal? MatchScore { get; set; }
     public decimal? RiskScore { get; set; }
+    /// <summary>Factory↔farm haversine km when both have coordinates; otherwise null.</summary>
+    public double? DistanceKm { get; set; }
+    /// <summary>True when distance could not be computed and governorate matching was used instead.</summary>
+    public bool UsedGovernorateFallback { get; set; }
     public string Status { get; set; } = default!;
     public DateTime CreatedAt { get; set; }
 }

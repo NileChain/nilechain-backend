@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using NileChain.AI.Agents;
+using NileChain.AI.Matching;
 using NileChain.AI.Models;
 using NileChain.AI.Orchestration;
 using NileChain.Infrastructure.Persistence;
@@ -52,14 +53,19 @@ public sealed class OrchestrationToolsPlugin
     [Description(
         "Search for candidate farms that grow the requested crop. " +
         "Use FIRST for any new supply request to build a shortlist. " +
+        "Geographic filtering is enforced by deterministic business rules " +
+        "(Exact / Nearby / Nationwide) from the persisted supply request — " +
+        "do NOT invent farms outside the allowed scope. " +
         "Pass radiusKm from the current search radius (start at 50). " +
-        "If fewer than 3 strong candidates are returned, call WidenSearchRadius then SearchFarms again with the new radius. " +
+        "radiusKm NEVER overrides Exact or Nearby into Nationwide. " +
+        "Only call WidenSearchRadius when the persisted scope is Nationwide and more candidates are needed. " +
+        "For Exact: return whatever matches (even 0–2); do NOT widen. " +
         "Do NOT call this repeatedly with the same radius.")]
     public async Task<string> SearchFarms(
         [Description("Crop type name, e.g. Wheat, Potato, Corn")] string cropType,
         [Description("Factory / preferred governorate")] string governorate,
         [Description("Quality specifications text")] string qualitySpecs,
-        [Description("Search radius in km. Use 50 initially; use the value returned by WidenSearchRadius after widening.")] int radiusKm)
+        [Description("Search radius in km. Use 50 initially; ignored for Exact/Nearby scope override.")] int radiusKm)
     {
         var args = $"cropType={cropType}; governorate={governorate}; qualitySpecs={Truncate(qualitySpecs, 80)}; radiusKm={radiusKm}";
         try
@@ -68,42 +74,98 @@ public sealed class OrchestrationToolsPlugin
                 ? OrchestrationRunState.DefaultRadiusKm
                 : radiusKm;
 
-            // Core scoring unchanged — MatchingPlugin.FindMatchingFarms(requestId).
-            var matches = await _matchingPlugin.FindMatchingFarms(_state.RequestId);
+            var persisted = await EnsurePersistedGeoPolicyAsync();
+            var expansionAttempted = _state.CurrentRadiusKm >= 100
+                || _state.WidenCallCount > 0;
+            var expansionAllowed =
+                GeographicMatching.AllowsAutomaticGeographicExpansion(persisted)
+                || _state.FactoryApprovedNationwideExpansion;
 
-            // Soft geographic preference when radius is still "local".
-            // Widened radius (>= 100) keeps the full MatchingPlugin shortlist (all governorates).
-            if (_state.CurrentRadiusKm < 100
-                && !string.IsNullOrWhiteSpace(governorate))
+            // radiusKm must NEVER broaden Exact/Nearby to Nationwide.
+            GeographicMatching.Scope? scopeOverride = null;
+            if (expansionAttempted && expansionAllowed)
             {
-                var local = matches
-                    .Where(m => string.Equals(
-                        m.Governorate,
-                        governorate,
-                        StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                if (local.Count > 0)
-                    matches = local;
+                scopeOverride = GeographicMatching.Scope.Nationwide;
+                _state.PartialResult = true;
+                _state.PartialReason ??=
+                    "Geographic search using Nationwide (persisted factory scope).";
+            }
+            else if (expansionAttempted && !expansionAllowed)
+            {
+                _logger.LogWarning(
+                    "SearchFarms ignored Nationwide radius override RequestId={RequestId} " +
+                    "PersistedGeoScope={Persisted} RequestedRadius={Radius} EffectiveGeoScope={Effective}",
+                    _state.RequestId,
+                    persisted,
+                    _state.CurrentRadiusKm,
+                    persisted);
             }
 
+            var effective = GeographicMatching.ResolveEffectiveScope(persisted, scopeOverride);
+
+            var search = await _matchingPlugin.FindMatchingFarmsCoreAsync(
+                _state.RequestId,
+                scopeOverride);
+            var matches = search.Results;
+
             _state.LastSearchResults = matches;
-            MergeIntoRanked(matches);
+            _state.LastTotalEligible = search.TotalEligible;
+            _state.LastTruncatedCount = search.TruncatedCount;
+            MergeIntoRanked(matches, effective);
+
+            if (matches.Count == 0
+                && (persisted == GeographicMatching.Scope.Exact
+                    || persisted == GeographicMatching.Scope.Nearby))
+            {
+                _state.PartialResult = true;
+                _state.PartialReason ??=
+                    $"No farms found within geographic scope {persisted}. " +
+                    "Automatic expansion to other governorates is not allowed.";
+            }
+
+            var hint = BuildSearchHint(persisted, matches.Count);
 
             var summary =
-                $"found={matches.Count}; radiusKm={_state.CurrentRadiusKm}; " +
-                $"farms=[{string.Join(", ", matches.Select(m => $"{m.FarmName}({m.MatchScore:0})"))}]";
+                $"found={matches.Count}; totalEligible={search.TotalEligible}; " +
+                $"truncated={search.TruncatedCount}; takeLimit={search.TakeLimit}; " +
+                $"radiusKm={_state.CurrentRadiusKm}; " +
+                $"persisted={persisted}; effective={effective}; " +
+                $"expansionAttempted={expansionAttempted}; expansionAllowed={expansionAllowed}; " +
+                $"farms=[{string.Join(", ", matches.Select(m => $"{m.FarmName}/{m.Governorate}({m.MatchScore:0})"))}]";
 
             _state.RecordTrail("SearchFarms", args, summary);
-            _logger.LogInformation("Tool SearchFarms | {Args} | {Summary}", args, summary);
+            _logger.LogInformation(
+                "Tool SearchFarms RequestId={RequestId} SelectedGovernorates={Preferred} " +
+                "PersistedGeoScope={Persisted} RequestedRadius={Radius} EffectiveGeoScope={Effective} " +
+                "CandidateCountAfterGeoFilter={Count} ExpansionAttempted={ExpansionAttempted} " +
+                "ExpansionAllowed={ExpansionAllowed} | {Summary}",
+                _state.RequestId,
+                string.Join(",", _state.PreferredGovernorates),
+                persisted,
+                _state.CurrentRadiusKm,
+                effective,
+                search.TotalEligible,
+                expansionAttempted,
+                expansionAllowed,
+                summary);
 
             return JsonSerializer.Serialize(new
             {
                 count = matches.Count,
+                totalEligible = search.TotalEligible,
+                truncatedCount = search.TruncatedCount,
+                takeLimit = search.TakeLimit,
                 radiusKm = _state.CurrentRadiusKm,
-                hint = matches.Count < 3
-                    ? "Fewer than 3 farms found. Consider WidenSearchRadius once, then SearchFarms again."
-                    : "Enough candidates. Next: CalculateRiskScore for top farms.",
+                geographicScope = effective.ToString(),
+                persistedGeographicScope = persisted.ToString(),
+                expandedNationwide = effective == GeographicMatching.Scope.Nationwide
+                    && expansionAllowed
+                    && expansionAttempted,
+                expansionAttempted,
+                expansionAllowed,
+                partialResult = _state.PartialResult,
+                partialReason = _state.PartialReason,
+                hint,
                 farms = matches.Select(m => new
                 {
                     m.FarmId,
@@ -112,7 +174,9 @@ public sealed class OrchestrationToolsPlugin
                     m.MatchScore,
                     m.RiskScore,
                     m.RiskLevel,
-                    m.IsVerified
+                    m.IsVerified,
+                    m.DistanceKm,
+                    m.UsedGovernorateFallback
                 })
             }, JsonOptions);
         }
@@ -169,13 +233,44 @@ public sealed class OrchestrationToolsPlugin
 
     [KernelFunction("WidenSearchRadius")]
     [Description(
-        "Increase the geographic search radius when SearchFarms returned too few farms. " +
-        "HARD LIMIT: call at most ONCE per request. Returns the new radiusKm to pass into SearchFarms. " +
-        "Do not call if you already widened once.")]
-    public string WidenSearchRadius(
+        "Attempt to expand geographic search when SearchFarms returned too few farms. " +
+        "BLOCKED for Exact and Nearby — those scopes never auto-expand to Nationwide. " +
+        "Only meaningful when the persisted factory scope is already Nationwide. " +
+        "HARD LIMIT: call at most ONCE per request. Do not call if you already widened once.")]
+    public async Task<string> WidenSearchRadius(
         [Description("Current radius in km")] int currentRadiusKm)
     {
         var args = $"currentRadiusKm={currentRadiusKm}";
+
+        var persisted = await EnsurePersistedGeoPolicyAsync();
+
+        if (!GeographicMatching.AllowsAutomaticGeographicExpansion(persisted)
+            && !_state.FactoryApprovedNationwideExpansion)
+        {
+            var blocked =
+                $"BLOCKED: Geographic scope is {persisted}; automatic geographic expansion is not allowed.";
+            _state.PartialResult = true;
+            _state.PartialReason ??=
+                persisted == GeographicMatching.Scope.Exact
+                    ? "Geographic scope is Exact; automatic geographic expansion is not allowed."
+                    : $"Geographic scope is {persisted}; automatic expansion to Nationwide is not allowed.";
+            _state.RecordTrail("WidenSearchRadius", args, blocked, blocked: true, blockReason: blocked);
+            _logger.LogWarning(
+                "Tool WidenSearchRadius BLOCKED RequestId={RequestId} PersistedGeoScope={Persisted} " +
+                "ExpansionAttempted=true ExpansionAllowed=false | {Args}",
+                _state.RequestId,
+                persisted,
+                args);
+            return JsonSerializer.Serialize(new
+            {
+                blocked = true,
+                reason = blocked,
+                radiusKm = _state.CurrentRadiusKm,
+                geographicScope = persisted.ToString(),
+                expansionAllowed = false,
+                partialResult = true
+            });
+        }
 
         if (_state.WidenCallCount >= OrchestrationRunState.MaxWidenCalls)
         {
@@ -192,6 +287,7 @@ public sealed class OrchestrationToolsPlugin
                 blocked = true,
                 reason = blocked,
                 radiusKm = _state.CurrentRadiusKm,
+                geographicScope = "unchanged",
                 partialResult = true
             });
         }
@@ -203,17 +299,30 @@ public sealed class OrchestrationToolsPlugin
 
         _state.WidenCallCount++;
         _state.CurrentRadiusKm = newRadius;
+        _state.PartialResult = true;
+        _state.PartialReason =
+            "Geographic search widened within Nationwide (factory-selected scope).";
 
-        var summary = $"widenCount={_state.WidenCallCount}; newRadiusKm={newRadius}";
+        var summary =
+            $"widenCount={_state.WidenCallCount}; newRadiusKm={newRadius}; nextScope=Nationwide";
         _state.RecordTrail("WidenSearchRadius", args, summary);
-        _logger.LogInformation("Tool WidenSearchRadius | {Args} | {Summary}", args, summary);
+        _logger.LogInformation(
+            "Tool WidenSearchRadius RequestId={RequestId} PersistedGeoScope={Persisted} " +
+            "ExpansionAttempted=true ExpansionAllowed=true | {Args} | {Summary}",
+            _state.RequestId,
+            persisted,
+            args,
+            summary);
 
         return JsonSerializer.Serialize(new
         {
             radiusKm = newRadius,
             widenCallCount = _state.WidenCallCount,
             maxWidens = OrchestrationRunState.MaxWidenCalls,
-            nextStep = "Call SearchFarms again with this radiusKm."
+            geographicScope = "Nationwide",
+            expansionAllowed = true,
+            partialResult = true,
+            nextStep = "Call SearchFarms again with this radiusKm (Nationwide)."
         });
     }
 
@@ -604,17 +713,136 @@ public sealed class OrchestrationToolsPlugin
                && contractText.Contains(core, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void MergeIntoRanked(List<MatchResult> matches)
+    private void MergeIntoRanked(
+        List<MatchResult> matches,
+        GeographicMatching.Scope effectiveScope)
     {
-        var map = _state.RankedCandidates.ToDictionary(m => m.FarmId);
+        var preferred = _state.PreferredGovernorates;
+        var nearbyRadiusKm = _matchingPlugin.NearbyRadiusKm;
+        var accepted = new List<MatchResult>();
         foreach (var m in matches)
+        {
+            if (!PassesMergeEligibility(m, preferred, effectiveScope, nearbyRadiusKm))
+            {
+                _logger.LogWarning(
+                    "Rejected geographically invalid candidate before merge RequestId={RequestId} " +
+                    "FarmId={FarmId} FarmGovernorate={Gov} EffectiveGeoScope={Scope} Preferred={Preferred}",
+                    _state.RequestId,
+                    m.FarmId,
+                    m.Governorate,
+                    effectiveScope,
+                    string.Join(",", preferred));
+                continue;
+            }
+
+            accepted.Add(m);
+        }
+
+        // Also purge any previously ranked farms that violate the effective scope
+        // (e.g. stale Nationwide merge into an Exact run).
+        var map = _state.RankedCandidates
+            .Where(m => PassesMergeEligibility(m, preferred, effectiveScope, nearbyRadiusKm))
+            .ToDictionary(m => m.FarmId);
+
+        foreach (var m in accepted)
             map[m.FarmId] = m;
 
         _state.RankedCandidates = map.Values
             .OrderByDescending(m => m.MatchScore)
+            .ThenBy(m => m.DistanceKm ?? double.MaxValue)
             .ThenByDescending(m => m.RiskScore)
             .ThenByDescending(m => m.IsVerified)
             .ToList();
+    }
+
+    /// <summary>
+    /// Exact/Nationwide: governorate <see cref="GeographicMatching.IsEligible"/>.
+    /// Nearby: haversine when DistanceKm is known; else governorate adjacency fallback.
+    /// Does not use orchestration radiusKm.
+    /// </summary>
+    private static bool PassesMergeEligibility(
+        MatchResult m,
+        IReadOnlyList<string> preferred,
+        GeographicMatching.Scope effectiveScope,
+        double nearbyRadiusKm)
+    {
+        if (effectiveScope == GeographicMatching.Scope.Exact
+            || effectiveScope == GeographicMatching.Scope.Nationwide)
+        {
+            return GeographicMatching.IsEligible(m.Governorate, preferred, effectiveScope);
+        }
+
+        // Nearby
+        if (m.DistanceKm is double km)
+            return km <= nearbyRadiusKm;
+
+        if (m.UsedGovernorateFallback)
+            return GeographicMatching.IsEligible(
+                m.Governorate, preferred, GeographicMatching.Scope.Nearby);
+
+        // Stale ranked row without distance metadata (e.g. prior Nationwide) — fail closed.
+        return GeographicMatching.IsEligible(
+            m.Governorate, preferred, GeographicMatching.Scope.Nearby);
+    }
+
+    private async Task<GeographicMatching.Scope> EnsurePersistedGeoPolicyAsync()
+    {
+        if (_state.PersistedGeoScope is GeographicMatching.Scope cached)
+            return cached;
+
+        string? qualitySpecs = _state.Request.QualitySpecs;
+        string? factoryGov = _state.Request.FactoryGovernorate;
+
+        if (_db is not null && _state.RequestId != Guid.Empty)
+        {
+            try
+            {
+                var supplyRequest = await _db.SupplyRequests
+                    .AsNoTracking()
+                    .Include(r => r.Factory)
+                    .FirstOrDefaultAsync(r => r.RequestId == _state.RequestId);
+
+                if (supplyRequest is not null)
+                {
+                    qualitySpecs = supplyRequest.QualitySpecs;
+                    factoryGov = supplyRequest.Factory?.Governorate ?? factoryGov;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Could not load SupplyRequest for geo policy RequestId={RequestId}; using AgentRequest fields",
+                    _state.RequestId);
+            }
+        }
+
+        var preferred = GeographicMatching.ParsePreferredGovernorates(qualitySpecs, factoryGov);
+        var scope = GeographicMatching.ParseScope(qualitySpecs, preferred.Count > 0);
+
+        _state.PreferredGovernorates = preferred;
+        _state.PersistedGeoScope = scope;
+        return scope;
+    }
+
+    private static string BuildSearchHint(GeographicMatching.Scope persisted, int matchCount)
+    {
+        if (matchCount >= 3)
+            return "Enough candidates. Next: CalculateRiskScore for top farms.";
+
+        return persisted switch
+        {
+            GeographicMatching.Scope.Exact =>
+                matchCount == 0
+                    ? "No Exact-scope farms found. Do NOT call WidenSearchRadius. Report zero matches."
+                    : $"Exact scope returned {matchCount} farm(s). Do NOT call WidenSearchRadius. Proceed with these results.",
+            GeographicMatching.Scope.Nearby =>
+                matchCount == 0
+                    ? "No Nearby-scope farms found. Do NOT expand to Nationwide. Report zero matches."
+                    : $"Nearby scope returned {matchCount} farm(s). Do NOT expand to Nationwide. Proceed with these results.",
+            _ =>
+                "Fewer than 3 farms in Nationwide scope. You may call WidenSearchRadius once if helpful, then SearchFarms again."
+        };
     }
 
     private void ReRank()

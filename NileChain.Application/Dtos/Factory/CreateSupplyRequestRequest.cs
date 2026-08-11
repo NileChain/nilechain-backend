@@ -8,6 +8,11 @@ public class CreateSupplyRequestRequest
     public DateTime DeliveryDate { get; set; }
     public string? Quality { get; set; }
     public List<string> SelectedGovernorates { get; set; } = new();
+    /// <summary>Exact | Nearby | Nationwide. Defaults to Exact when governorates are selected.</summary>
+    public string? GeographicScope { get; set; }
+
+    /// <summary>Optional idempotency key (also accepted via Idempotency-Key header).</summary>
+    public string? IdempotencyKey { get; set; }
 }
 
 public class CreateSupplyRequestResponse

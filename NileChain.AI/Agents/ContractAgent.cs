@@ -1,7 +1,10 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.SemanticKernel;
 using NileChain.AI.Models;
 using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
+using NileChain.AI.Sbg;
+using NileChain.Application.Common;
 using System.Text;
 
 namespace NileChain.AI.Agents;
@@ -11,15 +14,21 @@ public class ContractAgent
     private readonly OpenAiKernelProvider _kernelProvider;
     private readonly ContractPlugin _plugin;
     private readonly RagPipeline _ragPipeline;
+    private readonly IConfiguration _configuration;
+    private readonly SbgStudentChatClient _sbgClient;
 
     public ContractAgent(
         OpenAiKernelProvider kernelProvider,
         ContractPlugin plugin,
-        RagPipeline ragPipeline)
+        RagPipeline ragPipeline,
+        IConfiguration configuration,
+        SbgStudentChatClient sbgClient)
     {
         _kernelProvider = kernelProvider;
         _plugin = plugin;
         _ragPipeline = ragPipeline;
+        _configuration = configuration;
+        _sbgClient = sbgClient;
     }
 
     public async Task<ContractGenerationResult> GenerateContractAsync(
@@ -27,7 +36,8 @@ public class ContractAgent
         MatchResult selectedFarm,
         string factoryName)
     {
-        if (!_kernelProvider.IsAvailable)
+        var chain = LlmKernelFactory.ResolveProviderChain(_configuration);
+        if (chain.Count == 0 && !_kernelProvider.IsAvailable)
         {
             return ContractGenerationResult.Ok(
                 BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
@@ -35,7 +45,10 @@ public class ContractAgent
 
         try
         {
-            var ragContext = await _ragPipeline.GetCombinedContextAsync(request.CropType);
+            var ragLookup = await _ragPipeline.GetCombinedContextAsync(request.CropType);
+            var ragContext = ragLookup.IsAvailable
+                ? ragLookup.Content
+                : $"[{ClientErrorSanitizer.ServiceUnavailableMessage}]";
 
             var prompt = _plugin.BuildContractPrompt(
                 farmName: selectedFarm.FarmName,
@@ -47,15 +60,44 @@ public class ContractAgent
                 qualitySpecs: request.QualitySpecs,
                 ragContext: ragContext);
 
-            var result = await _kernelProvider.Kernel!.InvokePromptAsync(prompt);
-            var text = result.ToString();
-            if (string.IsNullOrWhiteSpace(text))
+            Exception? lastFailure = null;
+            foreach (var providerKey in chain.Count > 0
+                         ? chain
+                         : new[] { LlmKernelFactory.ProviderOpenAi })
+            {
+                var kernel = LlmKernelFactory.CreateKernelForProvider(
+                    providerKey,
+                    _configuration,
+                    out _,
+                    out _,
+                    out _,
+                    _sbgClient);
+                if (kernel is null)
+                    continue;
+
+                try
+                {
+                    var result = await kernel.InvokePromptAsync(prompt);
+                    var text = result.ToString();
+                    if (string.IsNullOrWhiteSpace(text))
+                        continue;
+
+                    return ContractGenerationResult.Ok(text);
+                }
+                catch (Exception ex) when (LlmKernelFactory.IsProviderFailure(ex))
+                {
+                    lastFailure = ex;
+                }
+            }
+
+            if (lastFailure is not null)
             {
                 return ContractGenerationResult.Ok(
                     BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
             }
 
-            return ContractGenerationResult.Ok(text);
+            return ContractGenerationResult.Ok(
+                BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
         }
         catch (Exception)
         {

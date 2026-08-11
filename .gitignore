@@ -56,4 +56,5 @@ TestResults/
 publish/
 out/
 _build_check/
+.build-out/
 /Project-Instructions

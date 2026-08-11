@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NileChain.AI.Matching;
 using NileChain.AI.Models;
 using NileChain.AI.Orchestration;
 using NileChain.AI.Plugins;
@@ -19,13 +20,16 @@ public static class OrchestrationGuardrailSmoke
         var state = new OrchestrationRunState
         {
             RequestId = Guid.NewGuid(),
+            // Nationwide so widen-cap smoke still exercises successful then blocked widen.
+            PersistedGeoScope = GeographicMatching.Scope.Nationwide,
+            PreferredGovernorates = new[] { "Aswan" },
             Request = new AgentRequest
             {
                 CropType = "Wheat",
                 QuantityTons = 100,
                 PricePerTon = 10000,
                 DeliveryDate = DateTime.UtcNow.AddMonths(2),
-                QualitySpecs = "Grade A",
+                QualitySpecs = "Grade A | Gov:Aswan | GeoScope:Nationwide",
                 FactoryGovernorate = "Aswan"
             }
         };
@@ -40,8 +44,8 @@ public static class OrchestrationGuardrailSmoke
             state: state);
 
         // Directly test widen/propose/flag/validate without DB tools.
-        var w1 = plugin.WidenSearchRadius(50);
-        var w2 = plugin.WidenSearchRadius(100);
+        var w1 = plugin.WidenSearchRadius(50).GetAwaiter().GetResult();
+        var w2 = plugin.WidenSearchRadius(100).GetAwaiter().GetResult();
         Console.WriteLine("Widen #1: " + w1);
         Console.WriteLine("Widen #2 (expect blocked): " + w2);
         Console.WriteLine($"PartialResult after widens: {state.PartialResult}");

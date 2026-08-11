@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,7 +13,7 @@ namespace NileChain.API.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/farms")]
-[Authorize(Roles = "Factory,Admin,Farm")]
+[Authorize(Roles = "Factory,Admin,SuperAdmin,Farm")]
 public class FarmsController : ControllerBase
 {
     private readonly RiskPlugin _riskPlugin;
@@ -26,10 +27,23 @@ public class FarmsController : ControllerBase
 
     /// <summary>
     /// Full risk factor breakdown for a farm (Profile, Certs, Contracts, Ratings).
+    /// Factories/Admins may view any farm. Farm users may only view their own farm.
     /// </summary>
     [HttpGet("{farmId:guid}/risk-report")]
     public async Task<IActionResult> GetRiskReport(Guid farmId)
     {
+        if (User.IsInRole("Farm") && !User.IsInRole("Factory") && !User.IsInRole("Admin") && !User.IsInRole("SuperAdmin"))
+        {
+            var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!Guid.TryParse(userIdValue, out var userId))
+                return Forbid();
+
+            var owns = await _db.Farm.AsNoTracking()
+                .AnyAsync(f => f.FarmId == farmId && f.UserId == userId);
+            if (!owns)
+                return Forbid();
+        }
+
         var report = await _riskPlugin.CalculateRiskScore(farmId);
         if (string.Equals(report.AIAnalysis, "Farm not found", StringComparison.OrdinalIgnoreCase))
             return NotFound(new { message = "Farm not found", farmId });
@@ -41,7 +55,7 @@ public class FarmsController : ControllerBase
     /// Read-only public farm profile for factory decision support (no PII beyond display name).
     /// </summary>
     [HttpGet("{farmId:guid}/public-profile")]
-    [Authorize(Roles = "Factory,Admin")]
+    [Authorize(Roles = "Factory,Admin,SuperAdmin")]
     public async Task<IActionResult> GetPublicProfile(Guid farmId, CancellationToken ct)
     {
         var farm = await _db.Farm

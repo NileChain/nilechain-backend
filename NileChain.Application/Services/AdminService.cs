@@ -1,9 +1,13 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using NileChain.Application.Admin;
+using NileChain.Application.Auth;
 using NileChain.Application.Dtos.Admin;
 using NileChain.Application.Common;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Domain.Common;
+using NileChain.Domain.Enums;
 using NileChain.Domain.Identity;
 using NileChain.Domain.Interfaces;
 
@@ -16,6 +20,8 @@ namespace NileChain.Application.Services
         private readonly IFarmRepository _farmRepository;
         private readonly IFactoryRepository _factoryRepository;
         private readonly IRepository<NileChain.Domain.Entities.RagDocument> _ragDocumentRepository;
+        private readonly IRefreshTokenRepository _refreshTokenRepository;
+        private readonly IAdminAnalyticsRepository _analytics;
         private readonly IUnitOfWork _unitOfWork;
         private readonly IRagIndexer? _ragIndexer;
 
@@ -25,6 +31,8 @@ namespace NileChain.Application.Services
             IFarmRepository farmRepository,
             IFactoryRepository factoryRepository,
             IRepository<NileChain.Domain.Entities.RagDocument> ragDocumentRepository,
+            IRefreshTokenRepository refreshTokenRepository,
+            IAdminAnalyticsRepository analytics,
             IUnitOfWork unitOfWork,
             IRagIndexer? ragIndexer = null)
         {
@@ -33,6 +41,8 @@ namespace NileChain.Application.Services
             _farmRepository = farmRepository;
             _factoryRepository = factoryRepository;
             _ragDocumentRepository = ragDocumentRepository;
+            _refreshTokenRepository = refreshTokenRepository;
+            _analytics = analytics;
             _unitOfWork = unitOfWork;
             _ragIndexer = ragIndexer;
         }
@@ -108,13 +118,7 @@ namespace NileChain.Application.Services
             if (existingUser is not null)
                 throw new InvalidOperationException("An account with this email already exists.");
 
-            var role = request.Role.Trim().ToLower() switch
-            {
-                "farm" => "Farm",
-                "factory" => "Factory",
-                "admin" => "Admin",
-                _ => request.Role
-            };
+            var role = AdminRoleAllowlist.NormalizeOrThrow(request.Role);
 
             if (!await _roleManager.RoleExistsAsync(role))
                 throw new InvalidOperationException("The selected role does not exist.");
@@ -187,13 +191,7 @@ namespace NileChain.Application.Services
             if (!string.IsNullOrWhiteSpace(request.Role) &&
                 !request.Role.Equals(currentRole, StringComparison.OrdinalIgnoreCase))
             {
-                var newRole = request.Role.Trim().ToLower() switch
-                {
-                    "farm" => "Farm",
-                    "factory" => "Factory",
-                    "admin" => "Admin",
-                    _ => request.Role
-                };
+                var newRole = AdminRoleAllowlist.NormalizeOrThrow(request.Role);
 
                 if (!await _roleManager.RoleExistsAsync(newRole))
                     throw new InvalidOperationException("The selected role does not exist.");
@@ -205,6 +203,8 @@ namespace NileChain.Application.Services
                     var farm = await _farmRepository.GetByUserIdAsync(userId);
                     if (farm is not null)
                     {
+                        var farmContracts = await _farmRepository.GetFarmContractsAsync(userId);
+                        EntityDeleteGuards.EnsureCanRemoveFarm(farmContracts.Count > 0);
                         _farmRepository.Remove(farm);
                         await _unitOfWork.SaveChangesAsync();
                     }
@@ -214,6 +214,8 @@ namespace NileChain.Application.Services
                     var factory = await _factoryRepository.GetByUserIdAsync(userId);
                     if (factory is not null)
                     {
+                        var factoryContracts = await _factoryRepository.GetContractsAsync(factory.FactoryId);
+                        EntityDeleteGuards.EnsureCanRemoveFactory(factoryContracts.Count > 0);
                         _factoryRepository.Remove(factory);
                         await _unitOfWork.SaveChangesAsync();
                     }
@@ -371,6 +373,10 @@ namespace NileChain.Application.Services
                 return Result.Failure(AdminErrors.UserAlreadyBlocked);
 
             await _userManager.SetLockoutEndDateAsync(user, DateTimeOffset.MaxValue);
+
+            await RefreshTokenRevocation.RevokeAllActiveAsync(_refreshTokenRepository, user.Id);
+            await _unitOfWork.SaveChangesAsync();
+
             return Result.Success();
         }
 
@@ -399,6 +405,9 @@ namespace NileChain.Application.Services
 
             user.IsActive = false;
             await _userManager.UpdateAsync(user);
+
+            await RefreshTokenRevocation.RevokeAllActiveAsync(_refreshTokenRepository, user.Id);
+            await _unitOfWork.SaveChangesAsync();
 
             return Result.Success();
         }
@@ -472,11 +481,167 @@ namespace NileChain.Application.Services
                     Category = d.Category,
                     FilePath = d.FilePath,
                     UploadedAt = d.UploadedAt,
-                    Status = "indexed"
+                    Status = string.IsNullOrWhiteSpace(d.FilePath) ? "pending" : "uploaded"
                 })
                 .ToList();
 
             return Result<List<RagDocumentDto>>.Success(dtos);
         }
+
+        public async Task<Result<DashboardSummaryDto>> GetDashboardSummaryAsync(
+            CancellationToken cancellationToken = default)
+        {
+            var asOf = DeliveryDatePolicy.ToUtcStorage(DateTime.UtcNow.Date);
+            var fromUtc = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc)
+                .AddMonths(-6);
+
+            var pendingVerifications = await _analytics.CountUnverifiedUsersAsync(cancellationToken);
+            var openDisputes = await _analytics.CountOpenDisputesAsync(cancellationToken);
+            var stuck = await _analytics.CountStuckFulfillmentsAsync(asOf, cancellationToken);
+            var pendingSig = await _analytics.CountContractsByStatusAsync(
+                ContractStatus.PendingSignature, cancellationToken);
+            var pendingFarm = await _analytics.CountContractsByStatusAsync(
+                ContractStatus.PendingFarmSignature, cancellationToken);
+            var pendingFactory = await _analytics.CountContractsByStatusAsync(
+                ContractStatus.PendingFactorySignature, cancellationToken);
+            var signed = await _analytics.CountContractsByStatusAsync(
+                ContractStatus.Signed, cancellationToken);
+            var farms = await _analytics.CountFarmsAsync(cancellationToken);
+            var factories = await _analytics.CountFactoriesAsync(cancellationToken);
+            var admins = await _analytics.CountUsersInRolesAsync(
+                new[] { "Admin", "SuperAdmin" }, cancellationToken);
+            var totalUsers = await _analytics.CountAllUsersAsync(cancellationToken);
+
+            var monthlyRaw = await _analytics.GetMonthlyContractCountsAsync(fromUtc, cancellationToken);
+            var monthKeys = Enumerable.Range(0, 7)
+                .Select(i => fromUtc.AddMonths(i))
+                .Select(d => (d.Year, d.Month, Label: d.ToString("MMM")))
+                .ToList();
+            var countByKey = monthlyRaw.ToDictionary(x => (x.Year, x.Month), x => x.Count);
+            var maxCount = Math.Max(1, monthKeys.Max(m => countByKey.GetValueOrDefault((m.Year, m.Month))));
+            var monthly = monthKeys.Select(m =>
+            {
+                var count = countByKey.GetValueOrDefault((m.Year, m.Month));
+                return new MonthlyContractPointDto
+                {
+                    Label = m.Label,
+                    Count = count,
+                    HeightPercent = (int)Math.Round(100.0 * count / maxCount)
+                };
+            }).ToList();
+
+            var cropsRaw = await _analytics.GetTopCropDemandAsync(5, cancellationToken);
+            var crops = cropsRaw.Select(c =>
+            {
+                var risk = c.AvgRisk;
+                var band = risk is null ? "medium"
+                    : risk >= 70 ? "low"
+                    : risk >= 40 ? "medium"
+                    : "high";
+                return new CropDemandDto
+                {
+                    CropName = c.CropName,
+                    DemandTons = decimal.Round(c.DemandTons, 1, MidpointRounding.AwayFromZero),
+                    AvgPricePerTon = c.AvgPrice is null
+                        ? null
+                        : decimal.Round(c.AvgPrice.Value, 0, MidpointRounding.AwayFromZero),
+                    AvgRiskScore = risk is null
+                        ? null
+                        : decimal.Round(risk.Value, 0, MidpointRounding.AwayFromZero),
+                    RiskBand = band
+                };
+            }).ToList();
+
+            var activityRaw = await _analytics.GetRecentActivityAsync(8, cancellationToken);
+            var activity = activityRaw.Select(a => new AdminActivityItemDto
+            {
+                Kind = a.Kind,
+                Message = a.Message,
+                OccurredAt = a.OccurredAt,
+                Icon = a.Icon
+            }).ToList();
+
+            return Result<DashboardSummaryDto>.Success(new DashboardSummaryDto
+            {
+                PendingVerifications = pendingVerifications,
+                OpenDisputes = openDisputes,
+                StuckFulfillments = stuck,
+                PendingSignatureContracts = pendingSig + pendingFarm + pendingFactory,
+                SignedContracts = signed,
+                FarmCount = farms,
+                FactoryCount = factories,
+                AdminCount = admins,
+                TotalUsers = totalUsers,
+                MonthlyContracts = monthly,
+                TopCrops = crops,
+                RecentActivity = activity
+            });
+        }
+
+        public async Task<Result<AdminContractListDto>> GetContractsAsync(
+            string? status,
+            string? search,
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken = default)
+        {
+            page = Math.Max(1, page);
+            pageSize = Math.Clamp(pageSize, 1, 100);
+
+            var (total, rows) = await _analytics.GetContractsAsync(
+                status,
+                search,
+                (page - 1) * pageSize,
+                pageSize,
+                cancellationToken);
+
+            var items = rows.Select(r =>
+            {
+                decimal? value = null;
+                if (r.PricePerTon is > 0 && r.QuantityTons > 0)
+                    value = decimal.Round(r.QuantityTons * r.PricePerTon.Value, 0, MidpointRounding.AwayFromZero);
+
+                var risk = r.FarmRiskScore;
+                var band = risk is null ? "medium"
+                    : risk >= 70 ? "low"
+                    : risk >= 40 ? "medium"
+                    : "high";
+
+                return new AdminContractListItemDto
+                {
+                    ContractId = r.ContractId,
+                    ShortId = r.ContractId.ToString()[..8].ToUpperInvariant(),
+                    FarmName = r.FarmName,
+                    FactoryName = r.FactoryName,
+                    CropName = r.QuantityTons > 0
+                        ? $"{r.CropName} ({r.QuantityTons:0.##} ton)"
+                        : r.CropName,
+                    QuantityTons = r.QuantityTons,
+                    ValueEgp = value,
+                    FarmRiskScore = risk is null
+                        ? null
+                        : decimal.Round(risk.Value, 0, MidpointRounding.AwayFromZero),
+                    RiskBand = band,
+                    Status = MapAdminContractStatus(r.Status),
+                    CreatedAt = r.CreatedAt
+                };
+            }).ToList();
+
+            return Result<AdminContractListDto>.Success(new AdminContractListDto
+            {
+                Page = page,
+                PageSize = pageSize,
+                TotalCount = total,
+                Items = items
+            });
+        }
+
+        private static string MapAdminContractStatus(ContractStatus status) => status switch
+        {
+            ContractStatus.Signed => "signed",
+            ContractStatus.Cancelled => "rejected",
+            ContractStatus.Draft => "review",
+            _ => "review"
+        };
     }
 }

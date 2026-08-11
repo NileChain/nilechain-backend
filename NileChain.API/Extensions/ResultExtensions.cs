@@ -11,11 +11,7 @@ namespace NileChain.API.Extensions
             if (result.IsSuccess)
                 return new OkObjectResult(result.Value);
 
-            return new BadRequestObjectResult(new
-            {
-                Code = result.Error!.Code,
-                Message = result.Error.Description
-            });
+            return ToErrorResult(result.Error!);
         }
 
         public static IActionResult ToActionResult(
@@ -24,11 +20,16 @@ namespace NileChain.API.Extensions
             if (result.IsSuccess)
                 return new OkResult();
 
-            return new BadRequestObjectResult(new
+            return ToErrorResult(result.Error!);
+        }
+
+        private static ObjectResult ToErrorResult(Error error)
+        {
+            var status = (int)ResultHttpMapper.MapStatus(error);
+            return new ObjectResult(ResultHttpMapper.ToErrorBody(error))
             {
-                Code = result.Error!.Code,
-                Message = result.Error.Description
-            });
+                StatusCode = status
+            };
         }
     }
 }

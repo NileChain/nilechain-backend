@@ -30,6 +30,8 @@ public class FactoryMatchedFarmDto
     public decimal? MatchScore { get; set; }
     public decimal? RiskScore { get; set; }
     public string? FarmGovernorate { get; set; }
+    /// <summary>Most recent match CreatedAt for this farm (list default: newest first).</summary>
+    public DateTime CreatedAt { get; set; }
 }
 
 public class FactoryMessageDto

@@ -15,7 +15,15 @@ public interface IFarmService
     Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId);
     Task<Result> AddCropAsync(Guid userId, Guid cropTypeId);
     Task<Result> DeleteCropAsync(Guid userId, Guid cropTypeId);
-    Task<Result<List<FarmMatchItemDto>>> GetMatchesAsync(Guid userId, string? status, Guid? cropTypeId);
+    Task<Result<FarmMatchesListResponse>> GetMatchesAsync(
+        Guid userId,
+        string? status,
+        Guid? cropTypeId,
+        string? sort = null,
+        string? search = null,
+        int? days = null,
+        int page = 1,
+        int pageSize = 20);
     Task<Result> RespondToMatchAsync(Guid userId, Guid matchId, string action);
     Task<Result<FarmContractDto>> GetOrCreateContractForMatchAsync(Guid userId, Guid matchId);
     Task<Result<List<FarmContractDto>>> GetContractsAsync(Guid userId);

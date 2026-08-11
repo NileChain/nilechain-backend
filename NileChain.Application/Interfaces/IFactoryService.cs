@@ -1,4 +1,5 @@
 using NileChain.Application.Common;
+using NileChain.Application.Dtos.Admin;
 using NileChain.Application.Dtos.Factory;
 using NileChain.Application.Dtos.Farm;
 
@@ -9,8 +10,16 @@ public interface IFactoryService
     Task<Guid> RegisterFactoryAsync(Guid userId, string name, string governorate);
     Task<Result<FactoryProfileResponse>> GetProfileAsync(Guid userId);
     Task<Result> UpdateProfileAsync(Guid userId, UpdateFactoryProfileRequest request);
-    Task<Result<CreateSupplyRequestResponse>> CreateRequestAsync(Guid userId, CreateSupplyRequestRequest request);
-    Task<Result<List<FactoryMatchItemDto>>> GetRequestMatchesAsync(Guid userId, Guid requestId);
+    Task<Result<CreateSupplyRequestResponse>> CreateRequestAsync(
+        Guid userId,
+        CreateSupplyRequestRequest request,
+        string? idempotencyKey = null);
+    Task<Result<PagedResult<FactorySupplyRequestListItemDto>>> GetRequestsAsync(
+        Guid userId,
+        int page = 1,
+        int pageSize = 10);
+    Task<Result<List<FactoryMatchItemDto>>> GetRequestMatchesAsync(Guid userId, Guid requestId, string? sort = null);
+    Task<Result> ExcludeMatchAsync(Guid userId, Guid matchId);
     Task<Result<List<FactoryMatchedFarmDto>>> GetMatchedFarmsAsync(Guid userId);
 
     Task<Result<List<FactoryNotificationDto>>> GetNotificationsAsync(Guid userId);

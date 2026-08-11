@@ -4,4 +4,5 @@
   <Project Path="NileChain.Application/NileChain.Application.csproj" />
   <Project Path="NileChain.Domain/NileChain.Domain.csproj" />
   <Project Path="NileChain.Infrastructure/NileChain.Infrastructure.csproj" />
+  <Project Path="NileChain.Tests/NileChain.Tests.csproj" />
 </Solution>

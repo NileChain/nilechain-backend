@@ -4,9 +4,15 @@ public class AgentResponse
 {
     public bool Success { get; set; }
     public List<MatchResult> TopMatches { get; set; } = new();
+    /// <summary>Eligible farms before Take-N truncation (when matching metadata is available).</summary>
+    public int TotalEligible { get; set; }
+    /// <summary>Farms excluded by the shortlist cap (TotalEligible - TopMatches.Count).</summary>
+    public int TruncatedCount { get; set; }
     public string ComparisonReport { get; set; } = string.Empty;
     public string ContractDraft { get; set; } = string.Empty;
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>Stable machine-readable error code for client mapping (never raw exception text).</summary>
+    public string? ErrorCode { get; set; }
 
     /// <summary>
     /// True when a hard tool-call cap stopped further retries (e.g. WidenSearchRadius).

@@ -596,7 +596,19 @@ public static partial class DevelopmentDataSeeder
             CreatedAt = DateTime.UtcNow.AddDays(-daysAgo),
             SignedAt = status == ContractStatus.Signed
                 ? DateTime.UtcNow.AddDays(-(daysAgo - 2))
-                : null
+                : null,
+            FactorySignedAt = status switch
+            {
+                ContractStatus.Signed => DateTime.UtcNow.AddDays(-(daysAgo - 1)),
+                ContractStatus.PendingFarmSignature => DateTime.UtcNow.AddDays(-(daysAgo - 1)),
+                _ => null
+            },
+            FarmSignedAt = status switch
+            {
+                ContractStatus.Signed => DateTime.UtcNow.AddDays(-(daysAgo - 2)),
+                ContractStatus.PendingFactorySignature => DateTime.UtcNow.AddDays(-(daysAgo - 1)),
+                _ => null
+            }
         });
     }
 

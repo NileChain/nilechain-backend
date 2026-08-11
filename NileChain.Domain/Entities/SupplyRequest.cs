@@ -10,9 +10,17 @@ public class SupplyRequest
     public decimal QuantityTons { get; set; }
     public string? QualitySpecs { get; set; }
     public decimal? PricePerTon { get; set; }
+    /// <summary>
+    /// Egypt calendar delivery date, stored at 12:00 UTC (see <see cref="Common.DeliveryDatePolicy"/>).
+    /// </summary>
     public DateTime? DeliveryDate { get; set; }
     public SupplyRequestStatus Status { get; set; } = SupplyRequestStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Optional client idempotency key; unique per factory when set (filtered unique index).
+    /// </summary>
+    public string? IdempotencyKey { get; set; }
 
     public Factory Factory { get; set; } = default!;
     public CropType CropType { get; set; } = default!;

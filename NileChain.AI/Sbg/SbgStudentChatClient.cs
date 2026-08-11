@@ -132,7 +132,6 @@ public sealed class SbgStudentChatClient
     private string? ResolveApiKey() =>
         FirstNonEmpty(
             Environment.GetEnvironmentVariable("SBG_API_KEY"),
-            Environment.GetEnvironmentVariable("OPENAI_KEY"),
             _options.ApiKey);
 
     internal static string ExtractAssistantText(string json)

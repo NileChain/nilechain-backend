@@ -7,5 +7,8 @@ public interface IContractPdfService
         string contractText,
         string farmName,
         string factoryName,
-        bool signed = false);
+        bool factorySigned = false,
+        bool farmSigned = false,
+        DateTime? factorySignedAt = null,
+        DateTime? farmSignedAt = null);
 }

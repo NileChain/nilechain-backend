@@ -1,4 +1,5 @@
 using NileChain.Application.Dtos.Auth.Requests;
+using NileChain.Application.Validation.Common;
 using FluentValidation;
 
 namespace NileChain.Application.Validation.Auth
@@ -24,6 +25,11 @@ namespace NileChain.Application.Validation.Auth
             RuleFor(x => x.ConfirmPassword)
                 .Equal(x => x.Password)
                 .WithMessage("Passwords do not match.");
+
+            RuleFor(x => x.Phone)
+                .NotEmpty()
+                .Must(EgyptianPhone.IsValid)
+                .WithMessage(EgyptianPhone.InvalidMessage);
 
             RuleFor(x => x.BusinessType)
                 .NotEmpty()

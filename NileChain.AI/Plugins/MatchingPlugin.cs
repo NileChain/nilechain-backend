@@ -1,8 +1,12 @@
-using System.ComponentModel;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.SemanticKernel;
 using NileChain.AI.Models;
+using NileChain.Domain.Common;
 using NileChain.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.SemanticKernel;
+using System.ComponentModel;
+using NileChain.AI.Matching;
 
 namespace NileChain.AI.Plugins;
 
@@ -14,16 +18,41 @@ public class MatchingPlugin
     private const decimal RiskScoreMaxPoints = 20m;
 
     private readonly NileChainDbContext _context;
+    private readonly ILogger<MatchingPlugin> _logger;
+    private readonly int _maxResults;
+    private readonly double _nearbyRadiusKm;
 
-    public MatchingPlugin(NileChainDbContext context)
+    public MatchingPlugin(
+        NileChainDbContext context,
+        ILogger<MatchingPlugin> logger,
+        IConfiguration? configuration = null)
     {
         _context = context;
+        _logger = logger;
+        _maxResults = MatchingLimits.ResolveMaxResults(
+            configuration?.GetValue<int?>("Matching:MaxResults"));
+        _nearbyRadiusKm = MatchingLimits.ResolveNearbyRadiusKm(
+            configuration?.GetValue<double?>("Matching:NearbyRadiusKm"));
     }
+
+    /// <summary>Configured Nearby haversine radius (not orchestration radiusKm).</summary>
+    public double NearbyRadiusKm => _nearbyRadiusKm;
 
     [KernelFunction("find_matching_farms")]
     [Description("Searches the database for farms that match the supply request criteria")]
-    public async Task<List<MatchResult>> FindMatchingFarms(
+    public async Task<MatchSearchResult> FindMatchingFarms(
         [Description("The supply request ID")] Guid requestId)
+    {
+        return await FindMatchingFarmsCoreAsync(requestId, geographicOverride: null);
+    }
+
+    /// <summary>
+    /// Core matching with optional geographic scope override.
+    /// Persisted Exact/Nearby scope is authoritative — overrides cannot broaden it.
+    /// </summary>
+    public async Task<MatchSearchResult> FindMatchingFarmsCoreAsync(
+        Guid requestId,
+        GeographicMatching.Scope? geographicOverride)
     {
         var supplyRequest = await _context.SupplyRequests
             .AsNoTracking()
@@ -40,32 +69,79 @@ public class MatchingPlugin
 
         var cropTypeId = supplyRequest.CropTypeId;
         var cropTypeName = supplyRequest.CropType.Name;
-        var requestedGovernorate = supplyRequest.Factory?.Governorate;
 
-        // TODO: Farm has no capacity/available-quantity field — QuantityTons ({supplyRequest.QuantityTons}) cannot be used for filtering yet.
-        // TODO: Farm has no IsActive/IsDeleted flag — inactive farms cannot be excluded yet.
+        var preferredGovernorates = GeographicMatching.ParsePreferredGovernorates(
+            supplyRequest.QualitySpecs,
+            supplyRequest.Factory?.Governorate);
+
+        var persistedScope = GeographicMatching.ParseScope(
+            supplyRequest.QualitySpecs,
+            preferredGovernorates.Count > 0);
+
+        var scope = GeographicMatching.ResolveEffectiveScope(persistedScope, geographicOverride);
+
+        // TODO: Farm has no capacity/available-quantity field — QuantityTons cannot be used for filtering yet.
+
+        // Exclude farms whose linked user is inactive (Users.IsActive == false).
+        var inactiveUserIds = await _context.Users
+            .AsNoTracking()
+            .Where(u => !u.IsActive)
+            .Select(u => u.Id)
+            .ToListAsync();
 
         var candidates = await _context.Farm
             .AsNoTracking()
             .Where(f => f.CropTypes.Any(c => c.CropTypeId == cropTypeId))
-            .Select(f => new
-            {
+            .Where(f => !inactiveUserIds.Contains(f.UserId))
+            .Select(f => new FarmCandidate(
                 f.FarmId,
                 f.Name,
                 f.Governorate,
                 f.RiskScore,
                 f.IsVerified,
-                CropTypeNames = f.CropTypes.Select(c => c.Name).ToList()
-            })
+                f.Latitude,
+                f.Longitude,
+                f.CropTypes.Select(c => c.Name).ToList()))
             .ToListAsync();
 
-        var results = candidates
-            .Select(farm =>
+        var beforeGeo = candidates.Count;
+        var factoryLat = supplyRequest.Factory?.Latitude;
+        var factoryLon = supplyRequest.Factory?.Longitude;
+
+        var geoFiltered = ApplyGeographicFilter(
+            candidates,
+            preferredGovernorates,
+            scope,
+            factoryLat,
+            factoryLon);
+
+        _logger.LogInformation(
+            "Geographic matching RequestId={RequestId} SelectedGovernorates={Preferred} " +
+            "PersistedGeoScope={Persisted} RequestedOverride={Override} EffectiveGeoScope={Effective} " +
+            "NearbyRadiusKm={NearbyRadiusKm} " +
+            "CandidateCountBeforeGeoFilter={Before} CandidateCountAfterGeoFilter={After} " +
+            "ExpansionAttempted={ExpansionAttempted} ExpansionAllowed={ExpansionAllowed}",
+            requestId,
+            string.Join(",", preferredGovernorates),
+            persistedScope,
+            geographicOverride?.ToString() ?? "none",
+            scope,
+            _nearbyRadiusKm,
+            beforeGeo,
+            geoFiltered.Count,
+            geographicOverride is not null && (int)geographicOverride.Value > (int)persistedScope,
+            GeographicMatching.AllowsAutomaticGeographicExpansion(persistedScope)
+                || (geographicOverride is not null
+                    && (int)geographicOverride.Value <= (int)persistedScope));
+
+        var ranked = geoFiltered
+            .Select(item =>
             {
+                var farm = item.Candidate;
                 var riskScore = farm.RiskScore ?? 0m;
                 var matchScore = CalculateMatchScore(
                     farm.Governorate,
-                    requestedGovernorate,
+                    preferredGovernorates,
                     farm.IsVerified,
                     riskScore);
 
@@ -78,31 +154,139 @@ public class MatchingPlugin
                     RiskScore = riskScore,
                     RiskLevel = GetRiskLevel(riskScore),
                     IsVerified = farm.IsVerified,
+                    DistanceKm = item.DistanceKm,
+                    UsedGovernorateFallback = item.UsedGovernorateFallback,
                     CropTypes = farm.CropTypeNames.Count > 0
                         ? farm.CropTypeNames
                         : new List<string> { cropTypeName }
                 };
             })
             .OrderByDescending(r => r.MatchScore)
+            .ThenBy(r => r.DistanceKm ?? double.MaxValue)
             .ThenByDescending(r => r.RiskScore)
             .ThenByDescending(r => r.IsVerified)
-            .Take(5)
+            .ThenBy(r => r.FarmId)
             .ToList();
 
-        return results;
+        var totalEligible = ranked.Count;
+        var results = ranked.Take(_maxResults).ToList();
+        var truncatedCount = Math.Max(0, totalEligible - results.Count);
+
+        return new MatchSearchResult
+        {
+            Results = results,
+            TotalEligible = totalEligible,
+            TruncatedCount = truncatedCount,
+            TakeLimit = _maxResults
+        };
+    }
+
+    /// <summary>
+    /// Pure ranking helper for unit tests (stable FarmId tie-break after scores).
+    /// </summary>
+    public static IReadOnlyList<MatchResult> RankAndTake(
+        IEnumerable<MatchResult> candidates,
+        int maxResults = MatchingLimits.DefaultMaxResults)
+    {
+        var limit = MatchingLimits.ResolveMaxResults(maxResults);
+        var ranked = candidates
+            .OrderByDescending(r => r.MatchScore)
+            .ThenBy(r => r.DistanceKm ?? double.MaxValue)
+            .ThenByDescending(r => r.RiskScore)
+            .ThenByDescending(r => r.IsVerified)
+            .ThenBy(r => r.FarmId)
+            .ToList();
+
+        return ranked.Take(limit).ToList();
+    }
+
+    private List<GeoFilteredCandidate> ApplyGeographicFilter(
+        IReadOnlyList<FarmCandidate> candidates,
+        IReadOnlyList<string> preferredGovernorates,
+        GeographicMatching.Scope scope,
+        decimal? factoryLat,
+        decimal? factoryLon)
+    {
+        if (scope == GeographicMatching.Scope.Exact
+            || scope == GeographicMatching.Scope.Nationwide)
+        {
+            return candidates
+                .Where(f => GeographicMatching.IsEligible(
+                    f.Governorate, preferredGovernorates, scope))
+                .Select(f => new GeoFilteredCandidate(
+                    f,
+                    TryDistance(factoryLat, factoryLon, f.Latitude, f.Longitude),
+                    UsedGovernorateFallback: false))
+                .ToList();
+        }
+
+        // Nearby: haversine when both ends have coords; else governorate adjacency fallback.
+        var factoryHasCoords = factoryLat is not null && factoryLon is not null;
+        var accepted = new List<GeoFilteredCandidate>();
+
+        foreach (var farm in candidates)
+        {
+            var farmHasCoords = farm.Latitude is not null && farm.Longitude is not null;
+
+            if (factoryHasCoords && farmHasCoords)
+            {
+                var distance = Haversine.DistanceKm(
+                    factoryLat!.Value,
+                    factoryLon!.Value,
+                    farm.Latitude!.Value,
+                    farm.Longitude!.Value);
+
+                if (distance <= _nearbyRadiusKm)
+                {
+                    accepted.Add(new GeoFilteredCandidate(
+                        farm,
+                        distance,
+                        UsedGovernorateFallback: false));
+                }
+
+                continue;
+            }
+
+            // Missing factory and/or farm coordinates → governorate-only Nearby (adjacency).
+            if (GeographicMatching.IsEligible(
+                    farm.Governorate, preferredGovernorates, GeographicMatching.Scope.Nearby))
+            {
+                accepted.Add(new GeoFilteredCandidate(
+                    farm,
+                    DistanceKm: null,
+                    UsedGovernorateFallback: true));
+            }
+        }
+
+        return accepted;
+    }
+
+    private static double? TryDistance(
+        decimal? factoryLat,
+        decimal? factoryLon,
+        decimal? farmLat,
+        decimal? farmLon)
+    {
+        if (factoryLat is null || factoryLon is null || farmLat is null || farmLon is null)
+            return null;
+
+        return Haversine.DistanceKm(
+            factoryLat.Value,
+            factoryLon.Value,
+            farmLat.Value,
+            farmLon.Value);
     }
 
     private static decimal CalculateMatchScore(
         string? farmGovernorate,
-        string? requestedGovernorate,
+        IReadOnlyList<string> preferredGovernorates,
         bool isVerified,
         decimal riskScore)
     {
         // Crop match is guaranteed by the candidate query.
         decimal score = CropMatchPoints;
 
-        if (!string.IsNullOrWhiteSpace(requestedGovernorate)
-            && string.Equals(farmGovernorate, requestedGovernorate, StringComparison.OrdinalIgnoreCase))
+        if (GeographicMatching.IsPreferredMatch(farmGovernorate, preferredGovernorates))
         {
             score += LocationMatchPoints;
         }
@@ -122,4 +306,19 @@ public class MatchingPlugin
         >= 40 => "متوسط المخاطر",
         _ => "عالي المخاطر"
     };
+
+    private sealed record FarmCandidate(
+        Guid FarmId,
+        string Name,
+        string? Governorate,
+        decimal? RiskScore,
+        bool IsVerified,
+        decimal? Latitude,
+        decimal? Longitude,
+        List<string> CropTypeNames);
+
+    private sealed record GeoFilteredCandidate(
+        FarmCandidate Candidate,
+        double? DistanceKm,
+        bool UsedGovernorateFallback);
 }

@@ -14,6 +14,16 @@ public class MatchResult
     public List<string> CropTypes { get; set; } = new();
 
     /// <summary>
+    /// Factory↔farm great-circle distance when both have coordinates; null when unavailable.
+    /// </summary>
+    public double? DistanceKm { get; set; }
+
+    /// <summary>
+    /// True when Nearby matching fell back to governorate eligibility because lat/long was missing.
+    /// </summary>
+    public bool UsedGovernorateFallback { get; set; }
+
+    /// <summary>
     /// Full risk breakdown for this farm (additive; existing score fields unchanged).
     /// </summary>
     public RiskReport? RiskReport { get; set; }

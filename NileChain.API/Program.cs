@@ -8,6 +8,7 @@ using NileChain.Infrastructure;
 using NileChain.Infrastructure.Persistence;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 
 var seedDemoOnly = args.Any(a =>
@@ -48,6 +49,9 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddNileChainAI(builder.Configuration);
 builder.Services.AddHostedService<NileChain.API.HostedServices.ProactiveMonitorHostedService>();
+builder.Services.Configure<NileChain.API.Options.ContractMatchExpiryOptions>(
+    builder.Configuration.GetSection(NileChain.API.Options.ContractMatchExpiryOptions.SectionName));
+builder.Services.AddHostedService<NileChain.API.HostedServices.ContractMatchExpiryHostedService>();
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<NileChain.API.Filters.FluentValidationActionFilter>();
@@ -55,6 +59,12 @@ builder.Services.AddControllers(options =>
 builder.Services.AddScoped<NileChain.API.Filters.FluentValidationActionFilter>();
 builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
+builder.Services.AddScoped<NileChain.API.Health.IDatabasePing, NileChain.API.Health.EfDatabasePing>();
+builder.Services.AddHealthChecks()
+    .AddCheck<NileChain.API.Health.DatabaseHealthCheck>(
+        "database",
+        failureStatus: Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy,
+        tags: ["ready"]);
 
 var corsOrigins = ResolveCorsOrigins(builder.Configuration);
 builder.Services.AddCors(options =>
@@ -71,12 +81,19 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 app.UseForwardedHeaders();
+app.UseMiddleware<NileChain.API.Middleware.AuthRateLimitMiddleware>();
 app.UseGlobalExceptionMiddleware();
 
 using (var scope = app.Services.CreateScope())
 {
     try
     {
+        var db = scope.ServiceProvider.GetRequiredService<NileChainDbContext>();
+        var migrateLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+            .CreateLogger("Startup.Migrations");
+        await db.Database.MigrateAsync();
+        migrateLogger.LogInformation("EF Core migrations applied (or already up to date).");
+
         var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>();
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
@@ -95,6 +112,12 @@ using (var scope = app.Services.CreateScope())
 
         if (seedDemoOnly || seedOnStartup)
         {
+            if (app.Environment.IsProduction())
+            {
+                throw new InvalidOperationException(
+                    "DevelopmentDataSeeder cannot run in Production. Remove --seed-demo / SEED_DEMO_ON_STARTUP.");
+            }
+
             var cs = app.Configuration.GetConnectionString("DefaultConnection") ?? "";
             var host = DescribeSqlHost(cs);
             Console.WriteLine("======== NileChain --seed-demo ========");
@@ -106,7 +129,6 @@ using (var scope = app.Services.CreateScope())
 
             var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
             var logger = loggerFactory.CreateLogger("DevelopmentDataSeeder");
-            var db = scope.ServiceProvider.GetRequiredService<NileChainDbContext>();
             await DevelopmentDataSeeder.SeedAsync(db, userManager, logger);
 
             try
@@ -173,6 +195,10 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    ResponseWriter = NileChain.API.Health.HealthResponseWriter.WriteAsync
+});
 
 app.Run();
 
@@ -182,7 +208,8 @@ static void ValidateProductionConfiguration(WebApplicationBuilder builder)
         return;
 
     var connection = builder.Configuration.GetConnectionString("DefaultConnection");
-    if (string.IsNullOrWhiteSpace(connection))
+    if (string.IsNullOrWhiteSpace(connection)
+        || connection.Contains("__SET_IN_LOCAL_CONFIG__", StringComparison.Ordinal))
     {
         throw new InvalidOperationException(
             "ConnectionStrings:DefaultConnection must be set in Production (e.g. ConnectionStrings__DefaultConnection).");
@@ -190,10 +217,13 @@ static void ValidateProductionConfiguration(WebApplicationBuilder builder)
 
     var jwtSecret = builder.Configuration["Jwt:Secret"];
     if (string.IsNullOrWhiteSpace(jwtSecret)
-        || string.Equals(jwtSecret, "__SET_IN_LOCAL_CONFIG__", StringComparison.Ordinal))
+        || string.Equals(jwtSecret, "__SET_IN_LOCAL_CONFIG__", StringComparison.Ordinal)
+        || jwtSecret.Contains("THIS_IS_DEVELOPMENT_SECRET_KEY", StringComparison.OrdinalIgnoreCase)
+        || jwtSecret.Contains("CHANGE_IT", StringComparison.OrdinalIgnoreCase)
+        || jwtSecret.Length < 32)
     {
         throw new InvalidOperationException(
-            "Jwt:Secret must be set to a strong secret in Production (e.g. Jwt__Secret).");
+            "Jwt:Secret must be set to a strong non-development secret in Production (e.g. Jwt__Secret).");
     }
 }
 

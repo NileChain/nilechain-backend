@@ -140,11 +140,14 @@ public static class SbgReactOrchestrator
 
             Available tools and argument keys:
             - SearchFarms: cropType, governorate, qualitySpecs, radiusKm
-            - WidenSearchRadius: currentRadiusKm (int)
+            - WidenSearchRadius: currentRadiusKm (int) — BLOCKED for Exact/Nearby; only for Nationwide
             - CalculateRiskScore: farmId (GUID string)
             - FlagLowRiskWarning: farmId (GUID string), riskScore (int)
             - ProposeNextBestMatch: rejectedFarmId (GUID string), requestId (GUID string)
             - GenerateContract: matchId (GUID — prefer FarmMatch.MatchId; FarmId from SearchFarms is also accepted)
+
+            Geographic rules: Exact never widens. Nearby never becomes Nationwide.
+            Only Nationwide may call WidenSearchRadius.
 
             When the workflow is finished (or blocked waiting for factory confirmation):
             {"done":true,"summary":"short plain-text summary for the factory"}

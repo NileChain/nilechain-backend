@@ -1,3 +1,4 @@
+using NileChain.Application.Auth;
 using NileChain.Application.Common;
 using NileChain.Application.Dtos.Auth.Requests;
 using NileChain.Application.Dtos.Auth.Responses;
@@ -5,11 +6,13 @@ using NileChain.Application.Dtos.Email;
 using NileChain.Application.Email;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Validation.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Identity;
 using NileChain.Domain.Interfaces;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using System.Text;
 
@@ -71,14 +74,25 @@ namespace NileChain.Application.Services
             if (!await _roleManager.RoleExistsAsync(role))
                 return Result<AuthResponse>.Failure(AuthErrors.RoleNotFound);
 
+            // Product policy: EmailConfirmed is informational for now.
+            // Login does not require confirmation (tokens are issued at register).
             // Create User
+            if (!EgyptianPhone.TryNormalizeValid(request.Phone, out var phone))
+                return Result<AuthResponse>.Failure(AuthErrors.InvalidPhoneNumber);
+
+            var phoneTaken = await _userManager.Users.AnyAsync(u => u.PhoneNumber == phone);
+            if (phoneTaken)
+                return Result<AuthResponse>.Failure(AuthErrors.PhoneAlreadyExists);
+
             var user = new ApplicationUser
             {
                 Id = Guid.NewGuid(),
                 UserName = request.Email,
                 Email = request.Email,
+                PhoneNumber = phone,
                 CreatedAt = DateTime.UtcNow,
-                IsVerified = false
+                IsVerified = false,
+                IsActive = true
             };
 
             var createResult = await _userManager.CreateAsync(user, request.Password);
@@ -177,15 +191,7 @@ namespace NileChain.Application.Services
             var accessToken = _tokenService.GenerateAccessToken(user, roles);
 
             // Revoke old active refresh tokens (Refresh Token Rotation)
-            var activeTokens =
-                await _refreshTokenRepository
-                    .GetActiveTokensByUserIdAsync(user.Id);
-
-            foreach (var token1 in activeTokens)
-            {
-                await _refreshTokenRepository.RevokeAsync(token1);
-            }
-
+            await RefreshTokenRevocation.RevokeAllActiveAsync(_refreshTokenRepository, user.Id);
             await _unitOfWork.SaveChangesAsync();
 
             // Generate new refresh token
@@ -230,14 +236,23 @@ namespace NileChain.Application.Services
             if (user is null)
                 return Result<AuthResponse>.Failure(AuthErrors.InvalidCredentials);
 
-            if (await _userManager.IsLockedOutAsync(user))
-                return Result<AuthResponse>.Failure(AuthErrors.AccountLocked);
+            var lockedOut = await _userManager.IsLockedOutAsync(user);
+            var gate = AuthAccessPolicy.DenyIfCannotAuthenticate(user, lockedOut);
+            if (gate is not null)
+                return Result<AuthResponse>.Failure(gate);
 
             var isPasswordValid =
                 await _userManager.CheckPasswordAsync(user, request.Password);
 
             if (!isPasswordValid)
+            {
+                await _userManager.AccessFailedAsync(user);
+                if (await _userManager.IsLockedOutAsync(user))
+                    return Result<AuthResponse>.Failure(AuthErrors.AccountLocked);
                 return Result<AuthResponse>.Failure(AuthErrors.InvalidCredentials);
+            }
+
+            await _userManager.ResetAccessFailedCountAsync(user);
 
             var roles = await _userManager.GetRolesAsync(user);
 
@@ -245,15 +260,7 @@ namespace NileChain.Application.Services
                 _tokenService.GenerateAccessToken(user, roles);
 
             // Revoke old active refresh tokens (Refresh Token Rotation)
-            var activeTokens =
-                await _refreshTokenRepository
-                    .GetActiveTokensByUserIdAsync(user.Id);
-
-            foreach (var token in activeTokens)
-            {
-                await _refreshTokenRepository.RevokeAsync(token);
-            }
-
+            await RefreshTokenRevocation.RevokeAllActiveAsync(_refreshTokenRepository, user.Id);
             await _unitOfWork.SaveChangesAsync();
 
             // Generate new refresh token
@@ -322,6 +329,15 @@ namespace NileChain.Application.Services
                     AuthErrors.ExpiredRefreshToken);
 
             var user = refreshToken.User;
+
+            var lockedOut = await _userManager.IsLockedOutAsync(user);
+            var gate = AuthAccessPolicy.DenyIfCannotAuthenticate(user, lockedOut);
+            if (gate is not null)
+            {
+                refreshToken.RevokedAt = DateTime.UtcNow;
+                await _unitOfWork.SaveChangesAsync();
+                return Result<AuthResponse>.Failure(gate);
+            }
 
             var roles =
                 await _userManager.GetRolesAsync(user);
@@ -514,6 +530,9 @@ namespace NileChain.Application.Services
                         errors));
             }
 
+            await RefreshTokenRevocation.RevokeAllActiveAsync(_refreshTokenRepository, user.Id);
+            await _unitOfWork.SaveChangesAsync();
+
             return Result.Success();
         }
 
@@ -523,7 +542,15 @@ namespace NileChain.Application.Services
             if (user is null)
                 return Result.Failure(AuthErrors.UserNotFound);
 
-            user.PhoneNumber = phoneNumber;
+            if (!Validation.Common.EgyptianPhone.TryNormalizeValid(phoneNumber, out var normalized))
+                return Result.Failure(AuthErrors.InvalidPhoneNumber);
+
+            var phoneTaken = await _userManager.Users.AnyAsync(u =>
+                u.PhoneNumber == normalized && u.Id != userId);
+            if (phoneTaken)
+                return Result.Failure(AuthErrors.PhoneAlreadyExists);
+
+            user.PhoneNumber = normalized;
             var result = await _userManager.UpdateAsync(user);
 
             if (!result.Succeeded)

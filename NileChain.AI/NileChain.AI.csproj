@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\NileChain.Application\NileChain.Application.csproj" />
     <ProjectReference Include="..\NileChain.Domain\NileChain.Domain.csproj" />
     <ProjectReference Include="..\NileChain.Infrastructure\NileChain.Infrastructure.csproj" />
   </ItemGroup>

@@ -29,10 +29,10 @@ public static class DependencyInjection
                 opts.BaseUrl = LlmKernelFactory.NormalizeSbgOrigin(configured);
 
             if (string.IsNullOrWhiteSpace(opts.ApiKey))
-                opts.ApiKey = LlmKernelFactory.ResolveApiKey(configuration) ?? string.Empty;
+                opts.ApiKey = LlmKernelFactory.ResolveSbgApiKey(configuration) ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(opts.ModelId))
-                opts.ModelId = LlmKernelFactory.ResolveModel(configuration);
+                opts.ModelId = LlmKernelFactory.ResolveSbgModel(configuration);
         });
 
         services.AddHttpClient<SbgStudentChatClient>(client =>

@@ -1,4 +1,5 @@
 using NileChain.Domain.Entities;
+using NileChain.Domain.Enums;
 using NileChain.Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -19,18 +20,61 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
     public async Task<SupplyRequest?> GetSupplyRequestByIdAsync(Guid requestId) =>
         await Context.SupplyRequests.FirstOrDefaultAsync(sr => sr.RequestId == requestId);
 
-    public async Task<List<FarmMatch>> GetMatchesByRequestIdAsync(Guid factoryId, Guid requestId) =>
-        await Context.FarmMatches
-            .Include(fm => fm.Farm)
-            .Where(fm => fm.RequestId == requestId && fm.SupplyRequest.FactoryId == factoryId)
-            .OrderByDescending(fm => fm.MatchScore)
+    public async Task<SupplyRequest?> GetSupplyRequestByIdempotencyKeyAsync(
+        Guid factoryId,
+        string idempotencyKey) =>
+        await Context.SupplyRequests
+            .Include(sr => sr.CropType)
+            .FirstOrDefaultAsync(sr =>
+                sr.FactoryId == factoryId
+                && sr.IdempotencyKey == idempotencyKey);
+
+    public async Task<(List<SupplyRequest> Items, int TotalCount)> GetSupplyRequestsPagedAsync(
+        Guid factoryId,
+        int page,
+        int pageSize)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var query = Context.SupplyRequests
+            .AsNoTracking()
+            .Include(sr => sr.CropType)
+            .Where(sr => sr.FactoryId == factoryId)
+            .OrderByDescending(sr => sr.CreatedAt);
+
+        var total = await query.CountAsync();
+        var items = await query
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return (items, total);
+    }
+
+    public async Task<List<FarmMatch>> GetMatchesByRequestIdAsync(
+        Guid factoryId,
+        Guid requestId,
+        string? sort = null) =>
+        await NileChain.Domain.Common.MatchListOrdering
+            .Apply(
+                Context.FarmMatches
+                    .Include(fm => fm.Farm)
+                    .Where(fm =>
+                        fm.RequestId == requestId &&
+                        fm.SupplyRequest.FactoryId == factoryId &&
+                        fm.Status != FarmMatchStatus.Rejected &&
+                        fm.Status != FarmMatchStatus.Expired),
+                sort)
             .ToListAsync();
 
     public async Task<FarmMatch?> GetMatchForFactoryAsync(Guid factoryId, Guid matchId) =>
         await Context.FarmMatches
             .Include(m => m.Farm)
+                .ThenInclude(f => f.User)
             .Include(m => m.SupplyRequest)
                 .ThenInclude(r => r.Factory)
+                    .ThenInclude(f => f!.User)
             .Include(m => m.SupplyRequest)
                 .ThenInclude(r => r.CropType)
             .Include(m => m.Contract)
@@ -61,20 +105,26 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
             .Include(c => c.FarmMatch)
                 .ThenInclude(m => m.SupplyRequest)
                     .ThenInclude(r => r!.CropType)
+            .Include(c => c.FarmMatch)
+                .ThenInclude(m => m.SupplyRequest)
+                    .ThenInclude(r => r!.Factory)
             .Where(c => c.FarmMatch.SupplyRequest.FactoryId == factoryId)
             .OrderByDescending(c => c.CreatedAt)
+            .ThenByDescending(c => c.ContractId)
             .ToListAsync();
 
     public async Task<Contract?> GetContractForFactoryAsync(Guid factoryId, Guid contractId) =>
         await Context.Contracts
             .Include(c => c.FarmMatch)
                 .ThenInclude(m => m.Farm)
+                    .ThenInclude(f => f.User)
             .Include(c => c.FarmMatch)
                 .ThenInclude(m => m.SupplyRequest)
                     .ThenInclude(r => r!.CropType)
             .Include(c => c.FarmMatch)
                 .ThenInclude(m => m.SupplyRequest)
                     .ThenInclude(r => r!.Factory)
+                        .ThenInclude(f => f!.User)
             .FirstOrDefaultAsync(c =>
                 c.ContractId == contractId && c.FarmMatch.SupplyRequest.FactoryId == factoryId);
 

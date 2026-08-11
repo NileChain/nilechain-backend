@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NileChain.Application.Common;
 
 namespace NileChain.AI.RAG;
 
@@ -19,10 +20,13 @@ public class ChromaService
         _httpClient = httpClient;
     }
 
-    public async Task<string> QueryAsync(string query, int nResults = 3)
+    /// <summary>
+    /// Queries Chroma. Distinguishes empty results from service unavailability.
+    /// </summary>
+    public async Task<ChromaLookupResult> QueryAsync(string query, int nResults = 3)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return string.Empty;
+            return ChromaLookupResult.Empty();
 
         try
         {
@@ -33,17 +37,16 @@ public class ChromaService
                 CollectionName = CollectionName
             };
 
-            // BaseAddress is configured via DI (default http://localhost:8001)
             var response = await _httpClient.PostAsJsonAsync("/query", request, JsonOptions);
 
             if (!response.IsSuccessStatusCode)
-                return string.Empty;
+                return ChromaLookupResult.Unavailable();
 
             var result = await response.Content
-                .ReadFromJsonAsync<ChromaQueryResult>(JsonOptions);
+                .ReadFromJsonAsync<ChromaHttpQueryResult>(JsonOptions);
 
             if (result?.Documents is null || result.Documents.Count == 0)
-                return string.Empty;
+                return ChromaLookupResult.Empty();
 
             var documents = result.Documents
                 .SelectMany(batch => batch ?? Enumerable.Empty<string>())
@@ -51,26 +54,26 @@ public class ChromaService
                 .ToList();
 
             if (documents.Count == 0)
-                return string.Empty;
+                return ChromaLookupResult.Empty();
 
-            return string.Join(Environment.NewLine + Environment.NewLine, documents);
+            return ChromaLookupResult.Ok(
+                string.Join(Environment.NewLine + Environment.NewLine, documents));
         }
         catch (HttpRequestException)
         {
-            return string.Empty;
+            return ChromaLookupResult.Unavailable();
         }
         catch (TaskCanceledException)
         {
-            // Covers HttpClient timeouts
-            return string.Empty;
+            return ChromaLookupResult.Unavailable();
         }
         catch (JsonException)
         {
-            return string.Empty;
+            return ChromaLookupResult.Unavailable();
         }
         catch (Exception)
         {
-            return string.Empty;
+            return ChromaLookupResult.Unavailable();
         }
     }
 
@@ -121,6 +124,21 @@ public class ChromaService
     }
 }
 
+public sealed class ChromaLookupResult
+{
+    public bool IsAvailable { get; private init; }
+    public string Content { get; private init; } = string.Empty;
+
+    public static ChromaLookupResult Ok(string content) =>
+        new() { IsAvailable = true, Content = content };
+
+    public static ChromaLookupResult Empty() =>
+        new() { IsAvailable = true, Content = string.Empty };
+
+    public static ChromaLookupResult Unavailable() =>
+        new() { IsAvailable = false, Content = ClientErrorSanitizer.ServiceUnavailableMessage };
+}
+
 public class ChromaUpsertRequest
 {
     [JsonPropertyName("collection_name")]
@@ -148,7 +166,7 @@ public class ChromaQueryRequest
     public string CollectionName { get; set; } = string.Empty;
 }
 
-public class ChromaQueryResult
+public class ChromaHttpQueryResult
 {
     [JsonPropertyName("documents")]
     public List<List<string>> Documents { get; set; } = new();

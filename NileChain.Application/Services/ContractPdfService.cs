@@ -17,8 +17,20 @@ public class ContractPdfService : IContractPdfService
         string contractText,
         string farmName,
         string factoryName,
-        bool signed = false)
+        bool factorySigned = false,
+        bool farmSigned = false,
+        DateTime? factorySignedAt = null,
+        DateTime? farmSignedAt = null)
     {
+        var fullySigned = factorySigned && farmSigned;
+        var headerStatus = fullySigned
+            ? "FULLY SIGNED"
+            : factorySigned
+                ? "AWAITING FARM"
+                : farmSigned
+                    ? "AWAITING FACTORY"
+                    : "PENDING";
+
         var document = Document.Create(container =>
         {
             container.Page(page =>
@@ -28,7 +40,7 @@ public class ContractPdfService : IContractPdfService
                 page.DefaultTextStyle(x => x.FontSize(11).FontColor(Colors.Grey.Darken4).LineHeight(1.45f));
                 page.PageColor(Colors.White);
 
-                if (signed)
+                if (fullySigned)
                 {
                     page.Background()
                         .AlignCenter()
@@ -50,12 +62,12 @@ public class ContractPdfService : IContractPdfService
                             brand.Item().Text("AI-generated agricultural supply contract")
                                 .FontSize(9).FontColor(Colors.Grey.Darken1);
                         });
-                        row.ConstantItem(120).AlignRight().Text(text =>
+                        row.ConstantItem(140).AlignRight().Text(text =>
                         {
-                            text.Span(signed ? "SIGNED" : "PENDING")
+                            text.Span(headerStatus)
                                 .SemiBold()
-                                .FontSize(10)
-                                .FontColor(signed ? Colors.Green.Darken2 : Colors.Orange.Darken2);
+                                .FontSize(9)
+                                .FontColor(fullySigned ? Colors.Green.Darken2 : Colors.Orange.Darken2);
                         });
                     });
 
@@ -75,18 +87,32 @@ public class ContractPdfService : IContractPdfService
                         {
                             sig.Item().Text("Factory").FontSize(9).FontColor(Colors.Grey.Darken1);
                             sig.Item().Text(factoryName).SemiBold();
-                            sig.Item().PaddingTop(6).Text(signed ? "✔ Signed" : "Awaiting signature")
+                            sig.Item().PaddingTop(6).Text(factorySigned ? "✔ Signed" : "Awaiting signature")
                                 .FontSize(10)
-                                .FontColor(signed ? Colors.Green.Darken2 : Colors.Orange.Darken2);
+                                .FontColor(factorySigned ? Colors.Green.Darken2 : Colors.Orange.Darken2);
+                            if (factorySigned && factorySignedAt.HasValue)
+                            {
+                                sig.Item().PaddingTop(2)
+                                    .Text(factorySignedAt.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm") + " UTC")
+                                    .FontSize(8)
+                                    .FontColor(Colors.Grey.Darken1);
+                            }
                         });
                         row.ConstantItem(12);
                         row.RelativeItem().Border(1).BorderColor(Colors.Grey.Lighten2).Padding(10).Column(sig =>
                         {
                             sig.Item().Text("Farm").FontSize(9).FontColor(Colors.Grey.Darken1);
                             sig.Item().Text(farmName).SemiBold();
-                            sig.Item().PaddingTop(6).Text(signed ? "✔ Signed" : "Pending Signature")
+                            sig.Item().PaddingTop(6).Text(farmSigned ? "✔ Signed" : "Pending Signature")
                                 .FontSize(10)
-                                .FontColor(signed ? Colors.Green.Darken2 : Colors.Orange.Darken2);
+                                .FontColor(farmSigned ? Colors.Green.Darken2 : Colors.Orange.Darken2);
+                            if (farmSigned && farmSignedAt.HasValue)
+                            {
+                                sig.Item().PaddingTop(2)
+                                    .Text(farmSignedAt.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm") + " UTC")
+                                    .FontSize(8)
+                                    .FontColor(Colors.Grey.Darken1);
+                            }
                         });
                     });
                 });

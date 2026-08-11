@@ -23,6 +23,12 @@ public static class DependencyInjection
         services.AddScoped<IMarketPriceService, MarketPriceService>();
         services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IContractPdfService, ContractPdfService>();
+        services.AddScoped<ICropRequestService, CropRequestService>();
+        services.AddScoped<IFulfillmentService, FulfillmentService>();
+        services.AddScoped<IPaymentMilestoneService, PaymentMilestoneService>();
+        services.AddScoped<IDisputeService, DisputeService>();
+        services.Configure<Options.PaymentMilestoneOptions>(
+            configuration.GetSection(Options.PaymentMilestoneOptions.SectionName));
 
         return services;
     }

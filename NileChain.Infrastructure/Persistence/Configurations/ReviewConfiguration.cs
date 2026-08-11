@@ -11,6 +11,10 @@ public class ReviewConfiguration : IEntityTypeConfiguration<Review>
         builder.ToTable("Review");
         builder.HasKey(r => r.ReviewId);
 
+        builder.HasIndex(r => new { r.ContractId, r.ReviewerId })
+            .IsUnique()
+            .HasDatabaseName("IX_Review_ContractId_ReviewerId");
+
         builder.HasOne(r => r.Contract)
             .WithMany(c => c.Reviews)
             .HasForeignKey(r => r.ContractId)

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
@@ -6,10 +7,14 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.OpenAI;
+using NileChain.AI.Matching;
 using NileChain.AI.Models;
 using NileChain.AI.Orchestration;
 using NileChain.AI.Plugins;
+using NileChain.AI.Resilience;
 using NileChain.AI.Sbg;
+using NileChain.Application.Common;
+using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Infrastructure.Persistence;
@@ -25,6 +30,11 @@ namespace NileChain.AI.Agents;
 public class OrchestratorAgent
 {
     private const decimal RiskMatchContributionMax = 20m;
+
+    /// <summary>
+    /// Serializes parallel agent runs for the same supply request (race-safe FarmMatch upserts).
+    /// </summary>
+    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> RequestRunGates = new();
 
     private readonly MatchingAgent _matchingAgent;
     private readonly RiskAgent _riskAgent;
@@ -63,33 +73,214 @@ public class OrchestratorAgent
 
     public async Task<AgentResponse> RunAsync(AgentRequest request)
     {
+        var gate = RequestRunGates.GetOrAdd(request.RequestId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var run = new AgentRun
+        {
+            RunId = Guid.NewGuid(),
+            RequestId = request.RequestId,
+            StartedAt = DateTime.UtcNow
+        };
+
         try
         {
-            if (_kernelProvider.IsAvailable)
-                return await RunAgenticAsync(request);
+            var factoryId = await _context.SupplyRequests
+                .AsNoTracking()
+                .Where(r => r.RequestId == request.RequestId)
+                .Select(r => (Guid?)r.FactoryId)
+                .FirstOrDefaultAsync();
+            run.FactoryId = factoryId;
+
+            _context.AgentRuns.Add(run);
+            await _context.SaveChangesAsync();
+
+            AgentResponse response;
+            if (!LlmCircuitBreaker.Shared.TryEnter(out var rejectReason))
+            {
+                _logger.LogWarning(
+                    "LLM circuit open; falling back to deterministic Matching→Risk for RequestId {RequestId} CorrelationId={CorrelationId}",
+                    request.RequestId,
+                    correlationId);
+
+                response = await RunDeterministicFallbackAsync(request);
+                response.OrchestratorMode = string.IsNullOrWhiteSpace(response.OrchestratorMode)
+                    ? "CircuitOpenFallback"
+                    : response.OrchestratorMode;
+                if (!response.Success)
+                {
+                    response.ErrorCode ??= ClientErrorSanitizer.ServiceUnavailableCode;
+                    response.ErrorMessage = string.IsNullOrWhiteSpace(response.ErrorMessage)
+                        ? (rejectReason ?? ClientErrorSanitizer.ServiceUnavailableMessage)
+                        : response.ErrorMessage;
+                }
+            }
+            else
+            {
+                try
+                {
+                    response = await RunUnlockedAsync(request);
+                    if (response.Success || response.TopMatches.Count > 0)
+                        LlmCircuitBreaker.Shared.RecordSuccess();
+                    else if (string.Equals(response.OrchestratorMode, "Error", StringComparison.OrdinalIgnoreCase))
+                        LlmCircuitBreaker.Shared.RecordFailure();
+                    else
+                        LlmCircuitBreaker.Shared.RecordSuccess();
+                }
+                catch (Exception)
+                {
+                    LlmCircuitBreaker.Shared.RecordFailure();
+                    throw;
+                }
+            }
+
+            response.ToolCallTrail = SanitizeTrail(response.ToolCallTrail);
+            await CompleteAgentRunAsync(run, response);
+            return response;
+        }
+        catch (Exception ex)
+        {
+            LlmCircuitBreaker.Shared.RecordFailure();
+            _logger.LogError(
+                ex,
+                "Orchestrator failed for RequestId {RequestId} CorrelationId={CorrelationId}",
+                request.RequestId,
+                correlationId);
+
+            var failed = new AgentResponse
+            {
+                Success = false,
+                ErrorCode = ClientErrorSanitizer.AgentFailureCode,
+                ErrorMessage = ClientErrorSanitizer.AgentFailureMessage,
+                OrchestratorMode = "Error"
+            };
+
+            run.CompletedAt = DateTime.UtcNow;
+            run.Success = false;
+            run.ErrorCode = failed.ErrorCode;
+            run.OrchestratorMode = failed.OrchestratorMode;
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception persistEx)
+            {
+                _logger.LogWarning(persistEx, "Failed to persist AgentRun failure for {RunId}", run.RunId);
+            }
+
+            return failed;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task CompleteAgentRunAsync(AgentRun run, AgentResponse response)
+    {
+        run.CompletedAt = DateTime.UtcNow;
+        run.Success = response.Success;
+        run.ErrorCode = response.ErrorCode
+            ?? (response.Success ? null : "AI.NoMatches");
+        run.TruncatedCount = response.TruncatedCount;
+        run.OrchestratorMode = response.OrchestratorMode;
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to complete AgentRun {RunId}", run.RunId);
+        }
+    }
+
+    private static List<ToolCallTrailEntry> SanitizeTrail(List<ToolCallTrailEntry> trail) =>
+        trail.Select(t => new ToolCallTrailEntry
+        {
+            TimestampUtc = t.TimestampUtc,
+            FunctionName = t.FunctionName,
+            ArgumentsSummary = ClientErrorSanitizer.SanitizeTrailText(t.ArgumentsSummary),
+            ResultSummary = ClientErrorSanitizer.SanitizeTrailText(t.ResultSummary),
+            Blocked = t.Blocked,
+            BlockReason = t.BlockReason is null
+                ? null
+                : ClientErrorSanitizer.SanitizeTrailText(t.BlockReason)
+        }).ToList();
+
+    private async Task<AgentResponse> RunUnlockedAsync(AgentRequest request)
+    {
+        try
+        {
+            var chain = LlmKernelFactory.ResolveProviderChain(_configuration);
+            if (chain.Count > 0)
+                return await RunAgenticWithFailoverAsync(request, chain);
 
             _logger.LogWarning(
-                "OpenAI unavailable ({Reason}); using deterministic Matching→Risk fallback for RequestId {RequestId}",
-                _kernelProvider.UnavailableReason,
+                "LLM unavailable ({Reason}); using deterministic Matching→Risk fallback for RequestId {RequestId}",
+                _kernelProvider.UnavailableReason ?? "no providers configured",
                 request.RequestId);
 
             return await RunDeterministicFallbackAsync(request);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Orchestrator failed for RequestId {RequestId}", request.RequestId);
+            var correlationId = Guid.NewGuid().ToString("N");
+            _logger.LogError(
+                ex,
+                "Orchestrator failed for RequestId {RequestId} CorrelationId={CorrelationId}",
+                request.RequestId,
+                correlationId);
             return new AgentResponse
             {
                 Success = false,
-                ErrorMessage = ex.Message,
+                ErrorCode = ClientErrorSanitizer.AgentFailureCode,
+                ErrorMessage = ClientErrorSanitizer.AgentFailureMessage,
                 OrchestratorMode = "Error"
             };
         }
     }
 
-    private async Task<AgentResponse> RunAgenticAsync(AgentRequest request)
+    private async Task<AgentResponse> RunAgenticWithFailoverAsync(
+        AgentRequest request,
+        IReadOnlyList<string> chain)
+    {
+        Exception? lastFailure = null;
+
+        for (var i = 0; i < chain.Count; i++)
+        {
+            var providerKey = chain[i];
+            try
+            {
+                _logger.LogInformation(
+                    "Agentic run trying provider={Provider} ({Index}/{Total}) for RequestId {RequestId}",
+                    LlmKernelFactory.DisplayName(providerKey),
+                    i + 1,
+                    chain.Count,
+                    request.RequestId);
+
+                return await RunAgenticAsync(request, providerKey);
+            }
+            catch (Exception ex) when (
+                LlmKernelFactory.IsProviderFailure(ex) && i < chain.Count - 1)
+            {
+                lastFailure = ex;
+                _logger.LogWarning(
+                    ex,
+                    "Provider {Provider} failed for RequestId {RequestId}; failing over to {Next}",
+                    LlmKernelFactory.DisplayName(providerKey),
+                    request.RequestId,
+                    LlmKernelFactory.DisplayName(chain[i + 1]));
+            }
+        }
+
+        throw lastFailure ?? new InvalidOperationException("No LLM provider succeeded.");
+    }
+
+    private async Task<AgentResponse> RunAgenticAsync(AgentRequest request, string providerKey)
     {
         var sw = Stopwatch.StartNew();
+        var nativeTools = LlmKernelFactory.SupportsNativeToolCalling(providerKey);
+        var providerDisplay = LlmKernelFactory.DisplayName(providerKey);
         var state = new OrchestrationRunState
         {
             RequestId = request.RequestId,
@@ -106,7 +297,7 @@ public class OrchestratorAgent
             _logger,
             state);
 
-        var kernel = CreatePerRequestKernel(tools);
+        var kernel = CreatePerRequestKernel(tools, providerKey);
         var chat = kernel.GetRequiredService<IChatCompletionService>();
 
         var systemPrompt = """
@@ -115,7 +306,10 @@ public class OrchestratorAgent
 
             Goal workflow (adapt based on tool results):
             1. Call SearchFarms with radiusKm=50.
-            2. If fewer than 3 farms, call WidenSearchRadius ONCE, then SearchFarms with the new radius.
+            2. Geographic expansion rules (HARD — tools enforce these too):
+               - Exact: NEVER call WidenSearchRadius. Return 0–N Exact matches as-is.
+               - Nearby: NEVER expand to Nationwide. Use Nearby results as-is.
+               - Nationwide only: if fewer than 3 farms, you MAY call WidenSearchRadius ONCE, then SearchFarms again.
             3. Call CalculateRiskScore for the top farms (at least the best one).
             4. If any score is < 40, call FlagLowRiskWarning and STOP contracting until the factory confirms.
             5. Do NOT call GenerateContract unless a match is clearly selected and risk is acceptable
@@ -124,7 +318,8 @@ public class OrchestratorAgent
             7. When done, briefly summarize the ranked farms and any warnings in plain text.
 
             Hard rules:
-            - WidenSearchRadius at most once.
+            - Exact means Exact — never invent or request farms outside the selected governorate(s).
+            - WidenSearchRadius at most once, and only when scope is Nationwide.
             - ProposeNextBestMatch at most once.
             - Never call GenerateContract immediately after FlagLowRiskWarning without confirmation.
             """;
@@ -140,48 +335,70 @@ public class OrchestratorAgent
             - Governorate: {request.FactoryGovernorate}
             - ConfirmHighRiskWarning: {request.ConfirmHighRiskWarning}
 
-            Find qualified farms, assess risk, widen search only if needed, flag low risk before contracting,
-            and prepare the best candidate. Return a short final summary after tools finish.
+            Find qualified farms within the persisted geographic scope, assess risk,
+            widen search ONLY if the factory chose Nationwide and more candidates are needed,
+            flag low risk before contracting, and prepare the best candidate.
+            Return a short final summary after tools finish.
             """;
 
         _logger.LogInformation(
             "Agentic orchestrator starting for RequestId {RequestId} provider={Provider} nativeTools={Native} (ConfirmHighRisk={Confirm})",
             request.RequestId,
-            _kernelProvider.ProviderName,
-            _kernelProvider.SupportsNativeToolCalling,
+            providerDisplay,
+            nativeTools,
             request.ConfirmHighRiskWarning);
 
-        string? finalContent;
-        if (_kernelProvider.SupportsNativeToolCalling)
+        string? finalContent = null;
+        Exception? chatFailure = null;
+        try
         {
-            var history = new ChatHistory(systemPrompt);
-            history.AddUserMessage(userGoal);
-
-            // SK 1.78+: FunctionChoiceBehavior.Auto (replaces older ToolCallBehavior.AutoInvokeKernelFunctions).
-            var settings = new OpenAIPromptExecutionSettings
+            if (nativeTools)
             {
-                Temperature = 0.2,
-                FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(
-                    autoInvoke: true,
-                    options: new FunctionChoiceBehaviorOptions
-                    {
-                        AllowParallelCalls = false,
-                        AllowConcurrentInvocation = false
-                    })
-            };
+                var history = new ChatHistory(systemPrompt);
+                history.AddUserMessage(userGoal);
 
-            var finalMessage = await chat.GetChatMessageContentAsync(history, settings, kernel);
-            finalContent = finalMessage?.Content;
+                // SK 1.78+: FunctionChoiceBehavior.Auto (replaces older ToolCallBehavior.AutoInvokeKernelFunctions).
+                var settings = new OpenAIPromptExecutionSettings
+                {
+                    Temperature = 0.2,
+                    // Keep completions small — free Groq TPM is tight for multi-tool agent runs.
+                    MaxTokens = 1024,
+                    FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(
+                        autoInvoke: true,
+                        options: new FunctionChoiceBehaviorOptions
+                        {
+                            AllowParallelCalls = false,
+                            AllowConcurrentInvocation = false
+                        })
+                };
+
+                finalContent = await InvokeChatWithRateLimitRetryAsync(
+                    () => chat.GetChatMessageContentAsync(history, settings, kernel));
+            }
+            else
+            {
+                // SBG (and similar) — JSON ReAct tool loop; no OpenAI tool_calls.
+                finalContent = await InvokeChatWithRateLimitRetryAsync(
+                    () => SbgReactOrchestrator.RunAsync(
+                        chat,
+                        kernel,
+                        systemPrompt,
+                        userGoal,
+                        _logger));
+            }
         }
-        else
+        catch (Exception ex) when (HasToolProducedMatches(state))
         {
-            // SBG (and similar) — JSON ReAct tool loop; no OpenAI tool_calls.
-            finalContent = await SbgReactOrchestrator.RunAsync(
-                chat,
-                kernel,
-                systemPrompt,
-                userGoal,
-                _logger);
+            // OpenAI SDK may crash parsing Refusal from OpenAI-compatible gateways after tools
+            // already succeeded. Prefer returning ranked matches over failing the whole run.
+            chatFailure = ex;
+            _logger.LogWarning(
+                ex,
+                "LLM chat parse/provider failure after tools produced matches for RequestId {RequestId}; returning tool results",
+                request.RequestId);
+            finalContent =
+                "Matching completed via tools. Final LLM summary unavailable "
+                + "(provider response could not be parsed).";
         }
 
         sw.Stop();
@@ -191,25 +408,36 @@ public class OrchestratorAgent
             .OrderByDescending(m => m.MatchScore)
             .ThenByDescending(m => m.RiskScore)
             .ThenByDescending(m => m.IsVerified)
-            .Take(5)
+            .ThenBy(m => m.FarmId)
+            .Take(MatchingLimits.DefaultMaxResults)
             .ToList();
 
         if (topMatches.Count == 0 && state.LastSearchResults.Count > 0)
-            topMatches = state.LastSearchResults.Take(5).ToList();
+            topMatches = state.LastSearchResults.Take(MatchingLimits.DefaultMaxResults).ToList();
+
+        if (topMatches.Count == 0 && chatFailure is not null)
+            throw chatFailure;
 
         await PersistFarmMatchesAsync(request.RequestId, topMatches);
 
         LogFullTrail(state, sw.Elapsed, finalContent);
 
-        var mode = _kernelProvider.SupportsNativeToolCalling
-            ? "Agentic"
-            : "AgenticSbgReact";
+        var mode = nativeTools ? "Agentic" : "AgenticSbgReact";
+
+        var totalEligible = state.LastTotalEligible > 0
+            ? state.LastTotalEligible
+            : state.RankedCandidates.Count;
+        var truncatedCount = state.LastTruncatedCount > 0
+            ? state.LastTruncatedCount
+            : Math.Max(0, totalEligible - topMatches.Count);
 
         var success = topMatches.Count > 0 || !string.IsNullOrWhiteSpace(state.ContractDraft);
         return new AgentResponse
         {
             Success = success,
             TopMatches = topMatches,
+            TotalEligible = totalEligible,
+            TruncatedCount = truncatedCount,
             ComparisonReport = finalContent ?? string.Empty,
             ContractDraft = state.ContractDraft ?? string.Empty,
             PartialResult = state.PartialResult,
@@ -247,8 +475,10 @@ public class OrchestratorAgent
                 TimestampUtc = DateTime.UtcNow
             });
 
-        var matches = await _matchingAgent.RunAsync(request);
-        Trail("SearchFarms(deterministic)", $"requestId={request.RequestId}", $"count={matches.Count}");
+        var search = await _matchingAgent.RunAsync(request);
+        var matches = search.Results;
+        Trail("SearchFarms(deterministic)", $"requestId={request.RequestId}",
+            $"count={matches.Count}; totalEligible={search.TotalEligible}; truncated={search.TruncatedCount}");
 
         if (matches.Count == 0)
         {
@@ -256,6 +486,8 @@ public class OrchestratorAgent
             {
                 Success = false,
                 ErrorMessage = "No matching farms found",
+                TotalEligible = search.TotalEligible,
+                TruncatedCount = search.TruncatedCount,
                 OrchestratorMode = "DeterministicFallback",
                 ToolCallTrail = trail
             };
@@ -287,6 +519,7 @@ public class OrchestratorAgent
             .OrderByDescending(m => m.MatchScore)
             .ThenByDescending(m => m.RiskScore)
             .ThenByDescending(m => m.IsVerified)
+            .ThenBy(m => m.FarmId)
             .ToList();
 
         RiskWarningResult? warning = null;
@@ -313,29 +546,150 @@ public class OrchestratorAgent
         {
             Success = true,
             TopMatches = matches,
+            TotalEligible = search.TotalEligible,
+            TruncatedCount = search.TruncatedCount,
             OrchestratorMode = "DeterministicFallback",
             RiskWarning = warning,
             ToolCallTrail = trail
         };
     }
 
-    private Kernel CreatePerRequestKernel(OrchestrationToolsPlugin tools)
+    private Kernel CreatePerRequestKernel(OrchestrationToolsPlugin tools, string providerKey)
     {
         // Fresh kernel per request so plugins/filters are not shared across concurrent runs.
-        var kernel = LlmKernelFactory.CreateKernel(
+        var kernel = LlmKernelFactory.CreateKernelForProvider(
+                         providerKey,
                          _configuration,
-                         out _,
+                         out var unavailableReason,
                          out _,
                          out _,
                          _sbgClient)
                      ?? throw new InvalidOperationException(
-                         "LLM is not configured (set SBG_BASE_URL + SBG_API_KEY, or OpenAI key/endpoint).");
+                         unavailableReason
+                         ?? "LLM is not configured (set SBG_BASE_URL + SBG_API_KEY, or OpenAI/Groq key).");
 
         kernel.Plugins.AddFromObject(tools, pluginName: "OrchestrationTools");
         kernel.FunctionInvocationFilters.Add(
             new OrchestrationGuardrailFilter(tools.State, _logger));
 
         return kernel;
+    }
+
+    private static bool HasToolProducedMatches(OrchestrationRunState state) =>
+        state.RankedCandidates.Count > 0
+        || state.LastSearchResults.Count > 0
+        || !string.IsNullOrWhiteSpace(state.ContractDraft);
+
+    /// <summary>
+    /// Free-tier providers (Groq) often return HTTP 429 TPM limits mid-agent-run.
+    /// Wait and retry a few times instead of failing the whole orchestration.
+    /// </summary>
+    private async Task<string?> InvokeChatWithRateLimitRetryAsync(Func<Task<ChatMessageContent>> invoke)
+    {
+        const int maxAttempts = 4;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                var message = await invoke();
+                return message?.Content;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsRateLimited(ex))
+            {
+                var delay = GetRateLimitDelay(ex, attempt);
+                _logger.LogWarning(
+                    ex,
+                    "LLM rate-limited (attempt {Attempt}/{Max}); waiting {Delay}s then retrying",
+                    attempt,
+                    maxAttempts,
+                    delay.TotalSeconds);
+                await Task.Delay(delay);
+            }
+        }
+
+        // Final attempt — let the exception surface to RunAsync.
+        var last = await invoke();
+        return last?.Content;
+    }
+
+    private async Task<string?> InvokeChatWithRateLimitRetryAsync(Func<Task<string>> invoke)
+    {
+        const int maxAttempts = 4;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return await invoke();
+            }
+            catch (Exception ex) when (attempt < maxAttempts && IsRateLimited(ex))
+            {
+                var delay = GetRateLimitDelay(ex, attempt);
+                _logger.LogWarning(
+                    ex,
+                    "LLM rate-limited (attempt {Attempt}/{Max}); waiting {Delay}s then retrying",
+                    attempt,
+                    maxAttempts,
+                    delay.TotalSeconds);
+                await Task.Delay(delay);
+            }
+        }
+
+        return await invoke();
+    }
+
+    private static bool IsRateLimited(Exception ex)
+    {
+        for (var cur = ex; cur is not null; cur = cur.InnerException)
+        {
+            var text = cur.Message ?? string.Empty;
+
+            // Daily / long quotas → fail over immediately (don't wait 15+ minutes).
+            if (text.Contains("tokens per day", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("TPD", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("Daily request limit", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("insufficient_quota", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("no credits", StringComparison.OrdinalIgnoreCase)
+                || System.Text.RegularExpressions.Regex.IsMatch(
+                    text,
+                    @"try again in\s+\d+\s*m",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            {
+                return false;
+            }
+
+            // Short TPM windows (e.g. "try again in 6.67s") → retry same provider.
+            if (text.Contains("tokens per minute", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("try again in", StringComparison.OrdinalIgnoreCase)
+                || (text.Contains("429", StringComparison.OrdinalIgnoreCase)
+                    && text.Contains("rate_limit", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static TimeSpan GetRateLimitDelay(Exception ex, int attempt)
+    {
+        // Groq often says "Please try again in 6.67s".
+        var text = ex.ToString();
+        var match = System.Text.RegularExpressions.Regex.Match(
+            text,
+            @"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*s",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (match.Success && double.TryParse(
+                match.Groups[1].Value,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var seconds)
+            && seconds > 0)
+        {
+            return TimeSpan.FromSeconds(Math.Clamp(seconds + 1.5, 3, 60));
+        }
+
+        // Exponential backoff fallback: 8s, 12s, 18s...
+        return TimeSpan.FromSeconds(Math.Min(8 * attempt, 45));
     }
 
     private async Task<string?> ResolveFactoryNameAsync(Guid requestId)
@@ -388,50 +742,28 @@ public class OrchestratorAgent
 
         try
         {
-            var farmIds = matches.Select(m => m.FarmId).ToList();
-
-            var existingMatches = await _context.FarmMatches
-                .Where(m => m.RequestId == requestId && farmIds.Contains(m.FarmId))
-                .ToListAsync();
-
-            var existingByFarmId = existingMatches
-                .GroupBy(m => m.FarmId)
-                .ToDictionary(g => g.Key, g => g.First());
-
-            var persistedCount = 0;
-
-            foreach (var match in matches)
-            {
-                if (existingByFarmId.TryGetValue(match.FarmId, out var existing))
-                {
-                    existing.MatchScore = match.MatchScore;
-                    existing.RiskScore = match.RiskScore;
-                    match.MatchId = existing.MatchId;
-                    persistedCount++;
-                    continue;
-                }
-
-                var matchId = Guid.NewGuid();
-                _context.FarmMatches.Add(new FarmMatch
-                {
-                    MatchId = matchId,
-                    RequestId = requestId,
-                    FarmId = match.FarmId,
-                    MatchScore = match.MatchScore,
-                    RiskScore = match.RiskScore,
-                    Status = FarmMatchStatus.Proposed,
-                    CreatedAt = DateTime.UtcNow
-                });
-                match.MatchId = matchId;
-                persistedCount++;
-            }
-
-            await _context.SaveChangesAsync();
-
-            _logger.LogInformation(
-                "Persisted {Count} FarmMatch rows for RequestId {RequestId}",
-                persistedCount,
+            await UpsertFarmMatchesAsync(requestId, matches);
+        }
+        catch (DbUpdateException ex) when (UniqueConstraintViolation.IsViolation(ex))
+        {
+            _logger.LogWarning(
+                ex,
+                "FarmMatch unique conflict for RequestId {RequestId}; retrying upsert",
                 requestId);
+
+            DetachAddedFarmMatches();
+            try
+            {
+                await UpsertFarmMatchesAsync(requestId, matches);
+            }
+            catch (Exception retryEx)
+            {
+                _logger.LogError(
+                    retryEx,
+                    "Failed to persist FarmMatch rows for RequestId {RequestId} after unique conflict retry: {Exception}",
+                    requestId,
+                    retryEx.Message);
+            }
         }
         catch (Exception ex)
         {
@@ -440,6 +772,138 @@ public class OrchestratorAgent
                 "Failed to persist FarmMatch rows for RequestId {RequestId}: {Exception}",
                 requestId,
                 ex.Message);
+        }
+    }
+
+    private async Task UpsertFarmMatchesAsync(Guid requestId, List<MatchResult> matches)
+    {
+        var farmIds = matches.Select(m => m.FarmId).ToHashSet();
+
+        // Supersede stale Proposed matches that fell out of the new shortlist.
+        var staleProposed = await _context.FarmMatches
+            .Include(m => m.Farm)
+            .Where(m =>
+                m.RequestId == requestId
+                && m.Status == FarmMatchStatus.Proposed
+                && !farmIds.Contains(m.FarmId))
+            .ToListAsync();
+
+        foreach (var stale in staleProposed)
+        {
+            stale.Status = FarmMatchStatus.Expired;
+            var farmUserId = stale.Farm?.UserId ?? Guid.Empty;
+            if (farmUserId != Guid.Empty)
+            {
+                _context.Notifications.Add(new Notification
+                {
+                    NotificationId = Guid.NewGuid(),
+                    UserId = farmUserId,
+                    Title = "Match superseded",
+                    Message =
+                        "A newer matching run replaced your proposal for this supply request.",
+                    Type = "MatchSuperseded",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+        }
+
+        var existingMatches = await _context.FarmMatches
+            .Where(m => m.RequestId == requestId && farmIds.Contains(m.FarmId))
+            .ToListAsync();
+
+        var existingByFarmId = existingMatches
+            .GroupBy(m => m.FarmId)
+            .ToDictionary(g => g.Key, g => g.First());
+
+        var persistedCount = 0;
+        var newProposedFarmIds = new List<Guid>();
+
+        foreach (var match in matches)
+        {
+            var snapshot = MatchGovernoratePolicy.SnapshotFromFarm(match.Governorate);
+
+            if (existingByFarmId.TryGetValue(match.FarmId, out var existing))
+            {
+                existing.MatchScore = match.MatchScore;
+                existing.RiskScore = match.RiskScore;
+                if (string.IsNullOrWhiteSpace(existing.MatchedGovernorate))
+                    existing.MatchedGovernorate = snapshot;
+
+                if (existing.Status is FarmMatchStatus.Expired or FarmMatchStatus.Rejected)
+                {
+                    existing.Status = FarmMatchStatus.Proposed;
+                    existing.MatchedGovernorate = snapshot;
+                    newProposedFarmIds.Add(match.FarmId);
+                }
+
+                match.MatchId = existing.MatchId;
+                persistedCount++;
+                continue;
+            }
+
+            var matchId = Guid.NewGuid();
+            _context.FarmMatches.Add(new FarmMatch
+            {
+                MatchId = matchId,
+                RequestId = requestId,
+                FarmId = match.FarmId,
+                MatchScore = match.MatchScore,
+                RiskScore = match.RiskScore,
+                MatchedGovernorate = snapshot,
+                Status = FarmMatchStatus.Proposed,
+                CreatedAt = DateTime.UtcNow
+            });
+            match.MatchId = matchId;
+            newProposedFarmIds.Add(match.FarmId);
+            persistedCount++;
+        }
+
+        if (newProposedFarmIds.Count > 0)
+        {
+            var farmUsers = await _context.Farm
+                .AsNoTracking()
+                .Where(f => newProposedFarmIds.Contains(f.FarmId))
+                .Select(f => new { f.FarmId, f.UserId })
+                .ToListAsync();
+
+            foreach (var farm in farmUsers)
+            {
+                if (farm.UserId == Guid.Empty)
+                    continue;
+
+                _context.Notifications.Add(new Notification
+                {
+                    NotificationId = Guid.NewGuid(),
+                    UserId = farm.UserId,
+                    Title = "New match proposal",
+                    Message =
+                        "Your farm was shortlisted for a supply request. Review the proposal in Matches.",
+                    Type = "MatchProposed",
+                    IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+        }
+
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "Persisted {Count} FarmMatch rows for RequestId {RequestId} " +
+            "(superseded={Superseded}, newlyProposed={New})",
+            persistedCount,
+            requestId,
+            staleProposed.Count,
+            newProposedFarmIds.Count);
+    }
+
+    private void DetachAddedFarmMatches()
+    {
+        foreach (var entry in _context.ChangeTracker.Entries<FarmMatch>()
+                     .Where(e => e.State == EntityState.Added)
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
         }
     }
 }

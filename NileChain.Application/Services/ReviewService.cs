@@ -1,9 +1,11 @@
 using NileChain.Application.Common;
 using NileChain.Application.Dtos.Review;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Reviews;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Domain.Interfaces;
+using Microsoft.EntityFrameworkCore;
 
 namespace NileChain.Application.Services;
 
@@ -11,21 +13,27 @@ public class ReviewService : IReviewService
 {
     private readonly IRepository<Review> _reviewRepository;
     private readonly IRepository<Contract> _contractRepository;
+    private readonly IRepository<FarmMatch> _farmMatchRepository;
     private readonly IRepository<Farm> _farmRepository;
     private readonly IRepository<Factory> _factoryRepository;
+    private readonly IRepository<SupplyRequest> _supplyRequestRepository;
     private readonly IUnitOfWork _unitOfWork;
 
     public ReviewService(
         IRepository<Review> reviewRepository,
         IRepository<Contract> contractRepository,
+        IRepository<FarmMatch> farmMatchRepository,
         IRepository<Farm> farmRepository,
         IRepository<Factory> factoryRepository,
+        IRepository<SupplyRequest> supplyRequestRepository,
         IUnitOfWork unitOfWork)
     {
         _reviewRepository = reviewRepository;
         _contractRepository = contractRepository;
+        _farmMatchRepository = farmMatchRepository;
         _farmRepository = farmRepository;
         _factoryRepository = factoryRepository;
+        _supplyRequestRepository = supplyRequestRepository;
         _unitOfWork = unitOfWork;
     }
 
@@ -41,6 +49,15 @@ public class ReviewService : IReviewService
 
         if (contract.Status != ContractStatus.Signed)
             return Result<ReviewDto>.Failure(new Error("Review.ContractNotSigned", "Only signed contracts can be reviewed."));
+
+        var (farmUserId, factoryUserId) = await ResolvePartyUserIdsAsync(contract);
+        var partyCheck = ReviewPartyAuthorization.Validate(
+            reviewerId,
+            request.TargetId,
+            farmUserId,
+            factoryUserId);
+        if (!partyCheck.IsSuccess)
+            return Result<ReviewDto>.Failure(partyCheck.Error!);
 
         var existing = (await _reviewRepository.GetAllAsync())
             .Any(r => r.ContractId == request.ContractId && r.ReviewerId == reviewerId);
@@ -60,7 +77,17 @@ public class ReviewService : IReviewService
 
         await _reviewRepository.AddAsync(review);
         await UpdateTargetRatingAsync(request.TargetId);
-        await _unitOfWork.SaveChangesAsync();
+
+        try
+        {
+            await _unitOfWork.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (UniqueConstraintViolation.IsViolation(ex))
+        {
+            return Result<ReviewDto>.Failure(new Error(
+                "Review.AlreadyExists",
+                "You already reviewed this contract."));
+        }
 
         return Result<ReviewDto>.Success(Map(review));
     }
@@ -74,6 +101,34 @@ public class ReviewService : IReviewService
             .ToList();
 
         return Result<List<ReviewDto>>.Success(reviews);
+    }
+
+    private async Task<(Guid? FarmUserId, Guid? FactoryUserId)> ResolvePartyUserIdsAsync(Contract contract)
+    {
+        if (contract.FarmMatch?.Farm is not null
+            && contract.FarmMatch.SupplyRequest?.Factory is not null)
+        {
+            return (
+                contract.FarmMatch.Farm.UserId,
+                contract.FarmMatch.SupplyRequest.Factory.UserId);
+        }
+
+        var matches = await _farmMatchRepository.GetAllAsync();
+        var match = matches.FirstOrDefault(m => m.MatchId == contract.MatchId);
+        if (match is null)
+            return (null, null);
+
+        var farms = await _farmRepository.GetAllAsync();
+        var farm = farms.FirstOrDefault(f => f.FarmId == match.FarmId);
+
+        var requests = await _supplyRequestRepository.GetAllAsync();
+        var request = requests.FirstOrDefault(r => r.RequestId == match.RequestId);
+        if (request is null)
+            return (farm?.UserId, null);
+
+        var factories = await _factoryRepository.GetAllAsync();
+        var factory = factories.FirstOrDefault(f => f.FactoryId == request.FactoryId);
+        return (farm?.UserId, factory?.UserId);
     }
 
     private async Task UpdateTargetRatingAsync(Guid targetId)
@@ -108,14 +163,14 @@ public class ReviewService : IReviewService
         }
     }
 
-    private static ReviewDto Map(Review r) => new()
+    private static ReviewDto Map(Review review) => new()
     {
-        ReviewId = r.ReviewId,
-        ContractId = r.ContractId,
-        ReviewerId = r.ReviewerId,
-        TargetId = r.TargetId,
-        Rating = r.Rating,
-        Comment = r.Comment,
-        CreatedAt = r.CreatedAt
+        ReviewId = review.ReviewId,
+        ContractId = review.ContractId,
+        ReviewerId = review.ReviewerId,
+        TargetId = review.TargetId,
+        Rating = review.Rating,
+        Comment = review.Comment,
+        CreatedAt = review.CreatedAt
     };
 }

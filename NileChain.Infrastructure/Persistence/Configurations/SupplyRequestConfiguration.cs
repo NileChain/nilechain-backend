@@ -18,10 +18,17 @@ public class SupplyRequestConfiguration : IEntityTypeConfiguration<SupplyRequest
             .HasConversion<string>()
             .HasMaxLength(20);
 
+        builder.Property(r => r.IdempotencyKey)
+            .HasMaxLength(128);
+
+        builder.HasIndex(r => new { r.FactoryId, r.IdempotencyKey })
+            .IsUnique()
+            .HasFilter("[IdempotencyKey] IS NOT NULL");
+
         builder.HasOne(r => r.Factory)
             .WithMany(f => f.SupplyRequests)
             .HasForeignKey(r => r.FactoryId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(r => r.CropType)
             .WithMany(c => c.SupplyRequests)

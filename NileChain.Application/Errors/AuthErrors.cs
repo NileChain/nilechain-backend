@@ -69,9 +69,24 @@ namespace NileChain.Application.Errors
         "Auth.PhoneUpdateFailed",
         "Failed to update phone number.");
 
+        public static readonly Error InvalidPhoneNumber =
+            new(
+                "Auth.InvalidPhoneNumber",
+                "Phone number must be an Egyptian mobile number: 11 digits starting with 01.");
+
+        public static readonly Error PhoneAlreadyExists =
+            new(
+                "Auth.PhoneAlreadyExists",
+                "An account with this phone number already exists.");
+
         public static readonly Error AccountLocked =
             new(
                 "Auth.AccountLocked",
                 "Your account has been blocked. Please contact support.");
+
+        public static readonly Error AccountInactive =
+            new(
+                "Auth.AccountInactive",
+                "Your account has been deactivated. Please contact support.");
     }
 }

@@ -20,5 +20,12 @@ namespace NileChain.Application.Interfaces
             string filePath,
             string contentText);
         Task<Result<List<RagDocumentDto>>> GetRagDocumentsAsync();
+        Task<Result<DashboardSummaryDto>> GetDashboardSummaryAsync(CancellationToken cancellationToken = default);
+        Task<Result<AdminContractListDto>> GetContractsAsync(
+            string? status,
+            string? search,
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken = default);
     }
 }

@@ -14,10 +14,20 @@ namespace NileChain.API.Controllers;
 public class FactoryController : ControllerBase
 {
     private readonly IFactoryService _factoryService;
+    private readonly IFulfillmentService _fulfillmentService;
+    private readonly IPaymentMilestoneService _paymentMilestoneService;
+    private readonly IDisputeService _disputeService;
 
-    public FactoryController(IFactoryService factoryService)
+    public FactoryController(
+        IFactoryService factoryService,
+        IFulfillmentService fulfillmentService,
+        IPaymentMilestoneService paymentMilestoneService,
+        IDisputeService disputeService)
     {
         _factoryService = factoryService;
+        _fulfillmentService = fulfillmentService;
+        _paymentMilestoneService = paymentMilestoneService;
+        _disputeService = disputeService;
     }
 
     [HttpGet("profile")]
@@ -49,19 +59,47 @@ public class FactoryController : ControllerBase
         if (userId is null)
             return Unauthorized();
 
-        var result = await _factoryService.CreateRequestAsync(Guid.Parse(userId), request);
+        var headerKey = Request.Headers["Idempotency-Key"].FirstOrDefault();
+        var result = await _factoryService.CreateRequestAsync(
+            Guid.Parse(userId),
+            request,
+            headerKey);
         return result.ToActionResult();
     }
 
-    [HttpGet("requests/{requestId:guid}/matches")]
-    public async Task<IActionResult> GetRequestMatches(Guid requestId)
+    [HttpGet("requests")]
+    public async Task<IActionResult> GetRequests(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 10)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
-        var result = await _factoryService.GetRequestMatchesAsync(Guid.Parse(userId), requestId);
+        var result = await _factoryService.GetRequestsAsync(Guid.Parse(userId), page, pageSize);
         return result.ToActionResult();
+    }
+
+    [HttpGet("requests/{requestId:guid}/matches")]
+    public async Task<IActionResult> GetRequestMatches(Guid requestId, [FromQuery] string? sort)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetRequestMatchesAsync(Guid.Parse(userId), requestId, sort);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("matches/{matchId:guid}/exclude")]
+    public async Task<IActionResult> ExcludeMatch(Guid matchId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.ExcludeMatchAsync(Guid.Parse(userId), matchId);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
     [HttpGet("matched-farms")]
@@ -160,6 +198,123 @@ public class FactoryController : ControllerBase
             return Unauthorized();
 
         var result = await _factoryService.PersistContractAsync(Guid.Parse(userId), request);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}/fulfillment")]
+    public async Task<IActionResult> GetFulfillment(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _fulfillmentService.GetByContractAsync(
+            Guid.Parse(userId), contractId, asFarm: false);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/fulfillment/receive")]
+    public async Task<IActionResult> MarkReceived(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _fulfillmentService.MarkReceivedAsync(Guid.Parse(userId), contractId);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/fulfillment/quality-check")]
+    public async Task<IActionResult> MarkQualityChecked(
+        Guid contractId,
+        [FromBody] NileChain.Application.Dtos.Fulfillment.QualityCheckRequest? request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _fulfillmentService.MarkQualityCheckedAsync(
+            Guid.Parse(userId), contractId, request?.Notes);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/fulfillment/fulfill")]
+    public async Task<IActionResult> MarkFulfilled(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _fulfillmentService.MarkFulfilledAsync(Guid.Parse(userId), contractId);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}/payment-milestones")]
+    public async Task<IActionResult> GetPaymentMilestones(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _paymentMilestoneService.GetByContractAsync(
+            Guid.Parse(userId), contractId, asFarm: false);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/payment-milestones/{transactionId:guid}/mark-paid")]
+    public async Task<IActionResult> MarkPaymentMilestonePaid(Guid contractId, Guid transactionId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _paymentMilestoneService.MarkPaidAsync(
+            Guid.Parse(userId), contractId, transactionId);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}/disputes")]
+    public async Task<IActionResult> ListDisputes(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _disputeService.ListForContractAsync(
+            Guid.Parse(userId), contractId, asFarm: false);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/disputes")]
+    [RequestSizeLimit(NileChain.Application.Validation.FileUploadValidation.MaxBytes * 5)]
+    public async Task<IActionResult> OpenDispute(
+        Guid contractId,
+        [FromForm] string type,
+        [FromForm] string description,
+        [FromForm] List<IFormFile>? evidence)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _disputeService.OpenAsync(
+            Guid.Parse(userId),
+            contractId,
+            asFarm: false,
+            type,
+            description,
+            evidence);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("disputes/{disputeId:guid}")]
+    public async Task<IActionResult> GetDispute(Guid disputeId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _disputeService.GetAsync(Guid.Parse(userId), disputeId, asFarm: false);
         return result.ToActionResult();
     }
 

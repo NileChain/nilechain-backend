@@ -1,3 +1,4 @@
+using NileChain.Application.Auth;
 using NileChain.Application.Interfaces;
 using NileChain.Domain.Identity;
 using NileChain.Domain.Interfaces;
@@ -12,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.IdentityModel.Tokens;
+using System.Security.Claims;
 using System.Text;
 
 namespace NileChain.Infrastructure;
@@ -27,6 +29,9 @@ public static class DependencyInjection
             {
                 options.Password.RequiredLength = 8;
                 options.User.RequireUniqueEmail = true;
+                options.Lockout.AllowedForNewUsers = true;
+                options.Lockout.MaxFailedAccessAttempts = 5;
+                options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
             })
             .AddEntityFrameworkStores<NileChainDbContext>()
             .AddDefaultTokenProviders();
@@ -68,6 +73,35 @@ public static class DependencyInjection
 
                         ClockSkew = TimeSpan.Zero
                     };
+
+                options.Events = new JwtBearerEvents
+                {
+                    OnTokenValidated = async context =>
+                    {
+                        var userManager = context.HttpContext.RequestServices
+                            .GetRequiredService<UserManager<ApplicationUser>>();
+
+                        var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                        if (string.IsNullOrWhiteSpace(userId))
+                        {
+                            context.Fail("Invalid token subject.");
+                            return;
+                        }
+
+                        var user = await userManager.FindByIdAsync(userId);
+                        if (user is null)
+                        {
+                            context.Fail("User not found.");
+                            return;
+                        }
+
+                        var isLockedOut = await userManager.IsLockedOutAsync(user);
+                        if (!AuthTokenValidation.IsAccessAllowed(user, isLockedOut))
+                        {
+                            context.Fail("User is inactive or locked out.");
+                        }
+                    }
+                };
             });
 
         services.Configure<CloudinaryOptions>(
@@ -81,6 +115,10 @@ public static class DependencyInjection
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
         services.AddScoped<IFarmRepository, FarmRepository>();
         services.AddScoped<IFactoryRepository, FactoryRepository>();
+        services.AddScoped<IFulfillmentRepository, FulfillmentRepository>();
+        services.AddScoped<IPaymentMilestoneRepository, PaymentMilestoneRepository>();
+        services.AddScoped<IDisputeRepository, DisputeRepository>();
+        services.AddScoped<IAdminAnalyticsRepository, AdminAnalyticsRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<ITemplateRenderer, TemplateRendererService>();
         services.AddScoped<ITokenService, JwtTokenService>();

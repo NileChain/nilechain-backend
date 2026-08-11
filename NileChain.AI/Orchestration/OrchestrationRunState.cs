@@ -1,4 +1,6 @@
+using NileChain.AI.Matching;
 using NileChain.AI.Models;
+using NileChain.Application.Common;
 
 namespace NileChain.AI.Orchestration;
 
@@ -25,6 +27,20 @@ public sealed class OrchestrationRunState
     public HashSet<Guid> RejectedFarmIds { get; } = new();
     public List<MatchResult> LastSearchResults { get; set; } = new();
     public List<MatchResult> RankedCandidates { get; set; } = new();
+    public int LastTotalEligible { get; set; }
+    public int LastTruncatedCount { get; set; }
+
+    /// <summary>Cached from persisted SupplyRequest.QualitySpecs (authoritative).</summary>
+    public GeographicMatching.Scope? PersistedGeoScope { get; set; }
+
+    /// <summary>Cached preferred governorates from Gov: / factory profile.</summary>
+    public IReadOnlyList<string> PreferredGovernorates { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Reserved for an explicit factory-approved expansion beyond Nearby.
+    /// Must never be set by the LLM. Currently unused (always false).
+    /// </summary>
+    public bool FactoryApprovedNationwideExpansion { get; set; }
 
     public bool RiskWarningActive { get; set; }
     public Guid? WarnedFarmId { get; set; }
@@ -53,10 +69,12 @@ public sealed class OrchestrationRunState
         {
             TimestampUtc = DateTime.UtcNow,
             FunctionName = functionName,
-            ArgumentsSummary = argsSummary,
-            ResultSummary = resultSummary,
+            ArgumentsSummary = ClientErrorSanitizer.SanitizeTrailText(argsSummary),
+            ResultSummary = ClientErrorSanitizer.SanitizeTrailText(resultSummary),
             Blocked = blocked,
-            BlockReason = blockReason
+            BlockReason = blockReason is null
+                ? null
+                : ClientErrorSanitizer.SanitizeTrailText(blockReason)
         });
     }
 }

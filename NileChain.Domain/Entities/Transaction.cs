@@ -37,6 +37,15 @@ public class Transaction
     /// <summary>When the farm confirmed payment received (status only).</summary>
     public DateTime? ReceivedAt { get; set; }
 
+    /// <summary>Expected payment date for overdue tracking (status only — not a gateway settlement date).</summary>
+    public DateTime? DueDate { get; set; }
+
+    /// <summary>Optional off-platform transfer receipt (Cloudinary URL).</summary>
+    public string? ReceiptUrl { get; set; }
+    public string? ReceiptPublicId { get; set; }
+    public string? ReceiptFileName { get; set; }
+    public DateTime? ReceiptUploadedAt { get; set; }
+
     public DateTime? VoidedAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

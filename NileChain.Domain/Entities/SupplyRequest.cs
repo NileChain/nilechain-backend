@@ -14,6 +14,13 @@ public class SupplyRequest
     /// Egypt calendar delivery date, stored at 12:00 UTC (see <see cref="Common.DeliveryDatePolicy"/>).
     /// </summary>
     public DateTime? DeliveryDate { get; set; }
+
+    /// <summary>Where goods change hands. Default factory gate.</summary>
+    public DeliveryPoint DeliveryPoint { get; set; } = DeliveryPoint.FactoryGate;
+
+    public DealParty FreightPayer { get; set; } = DealParty.Farm;
+    public DealParty TransitRisk { get; set; } = DealParty.Farm;
+
     public SupplyRequestStatus Status { get; set; } = SupplyRequestStatus.Pending;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

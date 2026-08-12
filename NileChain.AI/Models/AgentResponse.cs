@@ -8,6 +8,8 @@ public class AgentResponse
     public int TotalEligible { get; set; }
     /// <summary>Farms excluded by the shortlist cap (TotalEligible - TopMatches.Count).</summary>
     public int TruncatedCount { get; set; }
+    /// <summary>Proposed/Countered matches expired because they fell out of the new shortlist.</summary>
+    public int SupersededCount { get; set; }
     public string ComparisonReport { get; set; } = string.Empty;
     public string ContractDraft { get; set; } = string.Empty;
     public string ErrorMessage { get; set; } = string.Empty;

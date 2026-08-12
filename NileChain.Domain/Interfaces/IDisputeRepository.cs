@@ -29,4 +29,12 @@ public interface IDisputeRepository
         DisputeType? type,
         int skip,
         int take);
+
+    Task<(IReadOnlyList<Dispute> Items, int TotalCount)> ListForPartyAsync(
+        Guid farmId,
+        Guid factoryId,
+        bool asFarm,
+        DisputeStatus? status,
+        int skip,
+        int take);
 }

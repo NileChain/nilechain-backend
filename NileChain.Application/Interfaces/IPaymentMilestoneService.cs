@@ -14,7 +14,8 @@ public interface IPaymentMilestoneService
     Task<Result<PaymentMilestoneScheduleDto>> MarkPaidAsync(
         Guid factoryUserId,
         Guid contractId,
-        Guid transactionId);
+        Guid transactionId,
+        Microsoft.AspNetCore.Http.IFormFile? receipt = null);
 
     Task<Result<PaymentMilestoneScheduleDto>> ConfirmReceivedAsync(
         Guid farmUserId,

@@ -30,6 +30,13 @@ public class ReviewsController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpGet("contract/{contractId:guid}")]
+    public async Task<IActionResult> GetForContract(Guid contractId)
+    {
+        var result = await _reviewService.GetReviewsForContractAsync(contractId);
+        return result.ToActionResult();
+    }
+
     [HttpGet("target/{targetId:guid}")]
     public async Task<IActionResult> GetForTarget(Guid targetId)
     {

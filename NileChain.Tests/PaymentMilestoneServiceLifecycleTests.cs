@@ -158,6 +158,7 @@ public class PaymentMilestoneServiceLifecycleTests
     private static PaymentMilestoneService CreateService(NileChainDbContext db) =>
         new(
             new PaymentMilestoneRepository(db),
+            new EscrowTransactionRepository(db),
             new DisputeRepository(db),
             new FarmRepository(db),
             new FactoryRepository(db),
@@ -165,7 +166,17 @@ public class PaymentMilestoneServiceLifecycleTests
             new Repository<Notification>(db),
             new UnitOfWork(db),
             Options.Create(new PaymentMilestoneOptions()),
-            NullLogger<PaymentMilestoneService>.Instance);
+            Options.Create(new MockPaymentOptions { MockGatewayEnabled = false }),
+            NullLogger<PaymentMilestoneService>.Instance,
+            new NoopCloudinary());
+
+    private sealed class NoopCloudinary : NileChain.Application.Interfaces.ICloudinaryService
+    {
+        public Task<(string Url, string PublicId)> UploadAsync(Microsoft.AspNetCore.Http.IFormFile file) =>
+            Task.FromResult(("https://example.test/receipt", "receipt-public-id"));
+
+        public Task DeleteAsync(string publicId) => Task.CompletedTask;
+    }
 
     private static async Task<(Guid ContractId, Guid FarmUserId, Guid FactoryUserId, SupplyRequest Supply)>
         SeedSignedContractAsync(NileChainDbContext db, decimal? pricePerTon = 1000m)
@@ -313,6 +324,10 @@ public class PaymentMilestoneServiceLifecycleTests
                 .Property(c => c.RowVersion)
                 .IsConcurrencyToken()
                 .ValueGeneratedNever();
+            // SQL Server nvarchar(max) is invalid DDL for SQLite EnsureCreated.
+            modelBuilder.Entity<FarmMatch>()
+                .Property(m => m.EligibilitySnapshotJson)
+                .HasColumnType("TEXT");
         }
     }
 }

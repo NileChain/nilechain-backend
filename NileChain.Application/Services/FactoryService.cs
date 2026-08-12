@@ -1,14 +1,18 @@
 using NileChain.Application.Common;
+using NileChain.Application.Contracts;
 using NileChain.Application.Dtos.Admin;
 using NileChain.Application.Dtos.Factory;
 using NileChain.Application.Dtos.Farm;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Matching;
+using NileChain.Application.Options;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Domain.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace NileChain.Application.Services;
 
@@ -25,7 +29,11 @@ public class FactoryService : IFactoryService
     private readonly IFulfillmentService _fulfillmentService;
     private readonly IPaymentMilestoneService _paymentMilestoneService;
     private readonly IDisputeService _disputeService;
+    private readonly IWalletService _walletService;
+    private readonly IMockEscrowPaymentService _escrowPayments;
+    private readonly IContractIntegrityService _integrity;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly DeliveryTermsOptions _deliveryTerms;
 
     public FactoryService(
         IFactoryRepository factoryRepository,
@@ -39,7 +47,11 @@ public class FactoryService : IFactoryService
         IFulfillmentService fulfillmentService,
         IPaymentMilestoneService paymentMilestoneService,
         IDisputeService disputeService,
-        IUnitOfWork unitOfWork)
+        IWalletService walletService,
+        IMockEscrowPaymentService escrowPayments,
+        IContractIntegrityService integrity,
+        IUnitOfWork unitOfWork,
+        IOptions<DeliveryTermsOptions>? deliveryTerms = null)
     {
         _factoryRepository = factoryRepository;
         _cropTypeRepository = cropTypeRepository;
@@ -52,7 +64,11 @@ public class FactoryService : IFactoryService
         _fulfillmentService = fulfillmentService;
         _paymentMilestoneService = paymentMilestoneService;
         _disputeService = disputeService;
+        _walletService = walletService;
+        _escrowPayments = escrowPayments;
+        _integrity = integrity;
         _unitOfWork = unitOfWork;
+        _deliveryTerms = deliveryTerms?.Value ?? new DeliveryTermsOptions();
     }
 
     public async Task<Guid> RegisterFactoryAsync(Guid userId, string name, string governorate)
@@ -127,8 +143,6 @@ public class FactoryService : IFactoryService
         if (crop is null)
             return Result<CreateSupplyRequestResponse>.Failure(FactoryErrors.CropTypeNotFound);
 
-        var quality = request.Quality?.Trim() ?? string.Empty;
-
         // Normalize governorate slugs (giza → Giza) so MatchingPlugin hard filters work.
         var normalizedGovs = (request.SelectedGovernorates ?? new List<string>())
             .Select(NormalizeGovernorateLabel)
@@ -136,23 +150,26 @@ public class FactoryService : IFactoryService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (normalizedGovs.Count > 0)
-        {
-            var govPart = string.Join(",", normalizedGovs);
-            quality = string.IsNullOrWhiteSpace(quality)
-                ? $"Gov:{govPart}"
-                : $"{quality} | Gov:{govPart}";
-        }
-
         var scope = string.IsNullOrWhiteSpace(request.GeographicScope)
             ? (normalizedGovs.Count > 0 || !string.IsNullOrWhiteSpace(factory.Governorate)
                 ? "Exact"
                 : "Nationwide")
             : request.GeographicScope.Trim();
 
-        quality = string.IsNullOrWhiteSpace(quality)
-            ? $"GeoScope:{scope}"
-            : $"{quality} | GeoScope:{scope}";
+        var quality = StructuredQualitySpecs.Pack(
+            request.Quality,
+            request.StructuredQuality,
+            normalizedGovs!,
+            scope,
+            request.PreferredFarmId);
+
+        var terms = ResolveDeliveryTerms(
+            request.DeliveryPoint,
+            request.FreightPayer,
+            request.TransitRisk,
+            requirePoint: _deliveryTerms.Required);
+        if (terms.IsFailure)
+            return Result<CreateSupplyRequestResponse>.Failure(terms.Error!);
 
         var entity = new SupplyRequest
         {
@@ -163,6 +180,9 @@ public class FactoryService : IFactoryService
             PricePerTon = request.Price,
             DeliveryDate = DeliveryDatePolicy.ToUtcStorage(request.DeliveryDate),
             QualitySpecs = quality,
+            DeliveryPoint = terms.Value.Point,
+            FreightPayer = terms.Value.Freight,
+            TransitRisk = terms.Value.Transit,
             Status = SupplyRequestStatus.Pending,
             CreatedAt = DateTime.UtcNow,
             IdempotencyKey = key
@@ -200,7 +220,8 @@ public class FactoryService : IFactoryService
     public async Task<Result<PagedResult<FactorySupplyRequestListItemDto>>> GetRequestsAsync(
         Guid userId,
         int page = 1,
-        int pageSize = 10)
+        int pageSize = 10,
+        string? status = null)
     {
         var factory = await _factoryRepository.GetByUserIdAsync(userId);
         if (factory is null)
@@ -209,19 +230,10 @@ public class FactoryService : IFactoryService
         var (items, total) = await _factoryRepository.GetSupplyRequestsPagedAsync(
             factory.FactoryId,
             page,
-            pageSize);
+            pageSize,
+            status);
 
-        var dtos = items.Select(r => new FactorySupplyRequestListItemDto
-        {
-            RequestId = r.RequestId,
-            Crop = r.CropType?.Name ?? string.Empty,
-            QuantityTons = r.QuantityTons,
-            PricePerTon = r.PricePerTon,
-            DeliveryDate = r.DeliveryDate,
-            Status = r.Status.ToString(),
-            CreatedAt = r.CreatedAt,
-            IdempotencyKey = r.IdempotencyKey
-        }).ToList();
+        var dtos = items.Select(MapListItem).ToList();
 
         return Result<PagedResult<FactorySupplyRequestListItemDto>>.Success(new PagedResult<FactorySupplyRequestListItemDto>
         {
@@ -230,6 +242,543 @@ public class FactoryService : IFactoryService
             Page = Math.Max(1, page),
             PageSize = Math.Clamp(pageSize, 1, 100)
         });
+    }
+
+    public async Task<Result<FactorySupplyRequestDetailDto>> GetRequestAsync(Guid userId, Guid requestId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var request = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        if (request is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        return Result<FactorySupplyRequestDetailDto>.Success(MapDetail(request));
+    }
+
+    public async Task<Result<FactorySupplyRequestDetailDto>> UpdateRequestDeliveryTermsAsync(
+        Guid userId,
+        Guid requestId,
+        UpdateSupplyRequestDeliveryTermsRequest body)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var request = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        if (request is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        if (request.Status is SupplyRequestStatus.Cancelled or SupplyRequestStatus.Fulfilled)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestCannotUpdate);
+
+        var hasSigned = request.FarmMatches.Any(m =>
+            m.Contract is not null
+            && m.Contract.Status == ContractStatus.Signed
+            && m.Contract.IsFullySigned);
+        if (hasSigned)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestCannotUpdate);
+
+        var terms = ResolveDeliveryTerms(
+            body.DeliveryPoint ?? request.DeliveryPoint.ToString(),
+            body.FreightPayer ?? request.FreightPayer.ToString(),
+            body.TransitRisk ?? request.TransitRisk.ToString(),
+            requirePoint: true);
+        if (terms.IsFailure)
+            return Result<FactorySupplyRequestDetailDto>.Failure(terms.Error!);
+
+        request.DeliveryPoint = terms.Value.Point;
+        request.FreightPayer = terms.Value.Freight;
+        request.TransitRisk = terms.Value.Transit;
+        _supplyRequestRepository.Update(request);
+        await _unitOfWork.SaveChangesAsync();
+
+        var fresh = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        return Result<FactorySupplyRequestDetailDto>.Success(MapDetail(fresh ?? request));
+    }
+
+    public async Task<Result> CancelRequestAsync(Guid userId, Guid requestId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result.Failure(FactoryErrors.FactoryNotFound);
+
+        var request = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        if (request is null)
+            return Result.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        if (request.Status is SupplyRequestStatus.Cancelled or SupplyRequestStatus.Fulfilled)
+            return Result.Failure(FactoryErrors.SupplyRequestCannotCancel);
+
+        var hasSigned = request.FarmMatches.Any(m =>
+            m.Contract is not null
+            && m.Contract.Status == ContractStatus.Signed
+            && m.Contract.IsFullySigned);
+        if (hasSigned)
+            return Result.Failure(FactoryErrors.SupplyRequestCannotCancel);
+
+        foreach (var match in request.FarmMatches)
+        {
+            if (match.Status is FarmMatchStatus.Proposed
+                or FarmMatchStatus.Countered
+                or FarmMatchStatus.Accepted)
+            {
+                match.Status = FarmMatchStatus.Rejected;
+                _farmMatchRepository.Update(match);
+            }
+
+            var contract = match.Contract;
+            if (contract is not null
+                && contract.Status is ContractStatus.PendingSignature
+                    or ContractStatus.Draft
+                    or ContractStatus.PendingFarmSignature
+                    or ContractStatus.PendingFactorySignature)
+            {
+                contract.Status = ContractStatus.Cancelled;
+                contract.ClearSignatures();
+                _contractRepository.Update(contract);
+                await _fulfillmentService.VoidForContractAsync(
+                    contract.ContractId, userId, "Supply request cancelled");
+                await _paymentMilestoneService.VoidForContractAsync(
+                    contract.ContractId, userId, "Supply request cancelled");
+            }
+        }
+
+        request.Status = SupplyRequestStatus.Cancelled;
+        _supplyRequestRepository.Update(request);
+        await _unitOfWork.SaveChangesAsync();
+        return Result.Success();
+    }
+
+    public async Task<Result<FactoryDashboardResponse>> GetDashboardAsync(Guid userId)
+    {
+        var factory = await _factoryRepository.GetFactoryWithDashboardDataAsync(userId);
+        if (factory is null)
+            return Result<FactoryDashboardResponse>.Failure(FactoryErrors.FactoryNotFound);
+
+        var requests = factory.SupplyRequests?.ToList() ?? new List<SupplyRequest>();
+        var matches = requests.SelectMany(r => r.FarmMatches ?? Array.Empty<FarmMatch>()).ToList();
+        var contracts = matches
+            .Where(m => m.Contract is not null)
+            .Select(m => m.Contract!)
+            .ToList();
+
+        var openRequests = requests.Count(r =>
+            r.Status is SupplyRequestStatus.Pending or SupplyRequestStatus.Matched);
+        var activeMatches = matches.Count(m =>
+            m.Status is FarmMatchStatus.Proposed
+                or FarmMatchStatus.Countered
+                or FarmMatchStatus.Accepted);
+        var activeContracts = contracts.Count(c =>
+            c.Status is ContractStatus.PendingSignature
+                or ContractStatus.PendingFarmSignature
+                or ContractStatus.PendingFactorySignature
+                or ContractStatus.Signed);
+        var completed = contracts.Count(c =>
+            c.Status == ContractStatus.Signed
+            && c.IsFullySigned
+            && c.Fulfillment?.Status == FulfillmentStatus.Fulfilled);
+
+        var procurementValue = requests
+            .Where(r => r.Status != SupplyRequestStatus.Cancelled)
+            .Sum(r => (r.PricePerTon ?? 0m) * r.QuantityTons);
+
+        var riskScores = matches
+            .Where(m => m.RiskScore is not null)
+            .Select(m => m.RiskScore!.Value)
+            .ToList();
+
+        var attention = BuildFactoryAttention(requests, matches, contracts);
+        var payables = BuildFactoryPayables(contracts);
+
+        var recent = requests
+            .OrderByDescending(r => r.CreatedAt)
+            .Take(8)
+            .Select(MapListItem)
+            .ToList();
+
+        return Result<FactoryDashboardResponse>.Success(new FactoryDashboardResponse
+        {
+            OpenRequestsCount = openRequests,
+            ActiveMatchesCount = activeMatches,
+            ActiveContractsCount = activeContracts,
+            CompletedContractsCount = completed,
+            TotalProcurementValue = procurementValue,
+            AverageSupplierRiskScore = riskScores.Count == 0
+                ? 0
+                : Math.Round(riskScores.Average(), 1),
+            PayablesSummary = payables,
+            Attention = attention,
+            RecentRequests = recent
+        });
+    }
+
+    public async Task<Result<FactorySupplierScorecardDto>> GetSupplierScorecardAsync(
+        Guid userId,
+        Guid farmId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactorySupplierScorecardDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var matches = await _factoryRepository.GetMatchesWithFarmForFactoryAsync(
+            factory.FactoryId,
+            farmId);
+        if (matches.Count == 0)
+            return Result<FactorySupplierScorecardDto>.Failure(FactoryErrors.FarmNotFound);
+
+        var farm = matches[0].Farm;
+        var signed = matches
+            .Where(m => m.Contract is not null
+                && m.Contract.Status == ContractStatus.Signed
+                && m.Contract.IsFullySigned)
+            .ToList();
+
+        var disputes = signed
+            .SelectMany(m => m.Contract?.Disputes ?? Array.Empty<Dispute>())
+            .ToList();
+
+        var onTime = BuildOnTimeRate(signed);
+        var qcIssue = BuildQcIssueRate(signed);
+        var avgDiscount = BuildAvgQcDiscount(signed);
+
+        return Result<FactorySupplierScorecardDto>.Success(new FactorySupplierScorecardDto
+        {
+            FarmId = farmId,
+            FarmUserId = farm?.UserId,
+            FarmName = farm?.Name ?? "Unknown",
+            Governorate = farm?.Governorate,
+            IsVerified = farm?.IsVerified ?? false,
+            RiskScore = farm?.RiskScore ?? matches.Select(m => m.RiskScore).FirstOrDefault(s => s is not null),
+            AverageRating = farm?.AverageRating ?? 0,
+            RatingCount = farm?.RatingCount ?? 0,
+            DealsWithThisFactory = matches.Count,
+            CompletedContracts = signed.Count(m =>
+                m.Contract?.Fulfillment?.Status == FulfillmentStatus.Fulfilled),
+            OpenDisputes = disputes.Count(d =>
+                d.Status is DisputeStatus.Open or DisputeStatus.UnderReview),
+            TotalDisputes = disputes.Count,
+            OnTimeFulfillmentRate = onTime,
+            QcIssueRate = qcIssue,
+            AverageQcDiscountPercent = avgDiscount,
+            RecentDeals = signed
+                .OrderByDescending(m => m.Contract!.CreatedAt)
+                .Take(8)
+                .Select(m => new FactorySupplierDealDto
+                {
+                    ContractId = m.Contract!.ContractId,
+                    MatchId = m.MatchId,
+                    Crop = m.SupplyRequest?.CropType?.Name ?? string.Empty,
+                    QuantityTons = m.SupplyRequest?.QuantityTons ?? 0,
+                    ContractStatus = m.Contract.Status.ToString(),
+                    FulfillmentStatus = m.Contract.Fulfillment?.Status.ToString(),
+                    SignedAt = m.Contract.CreatedAt,
+                    QcDiscountPercent = m.Contract.Fulfillment?.DiscountPercent
+                })
+                .ToList()
+        });
+    }
+
+    private static FactorySupplyRequestListItemDto MapListItem(SupplyRequest r)
+    {
+        var quality = StructuredQualitySpecs.Parse(r.QualitySpecs);
+        var matches = r.FarmMatches ?? Array.Empty<FarmMatch>();
+        var active = matches.Count(m =>
+            m.Status is FarmMatchStatus.Proposed
+                or FarmMatchStatus.Countered
+                or FarmMatchStatus.Accepted);
+
+        return new FactorySupplyRequestListItemDto
+        {
+            RequestId = r.RequestId,
+            CropTypeId = r.CropTypeId,
+            Crop = r.CropType?.Name ?? string.Empty,
+            QuantityTons = r.QuantityTons,
+            PricePerTon = r.PricePerTon,
+            DeliveryDate = r.DeliveryDate,
+            Status = r.Status.ToString(),
+            CreatedAt = r.CreatedAt,
+            IdempotencyKey = r.IdempotencyKey,
+            MatchCount = matches.Count,
+            ActiveMatchCount = active,
+            GeographicScope = quality.GeographicScope,
+            Quality = quality
+        };
+    }
+
+    private static FactorySupplyRequestDetailDto MapDetail(SupplyRequest r)
+    {
+        var quality = StructuredQualitySpecs.Parse(r.QualitySpecs);
+        var matches = r.FarmMatches ?? Array.Empty<FarmMatch>();
+        var active = matches.Count(m =>
+            m.Status is FarmMatchStatus.Proposed
+                or FarmMatchStatus.Countered
+                or FarmMatchStatus.Accepted);
+        var hasSigned = matches.Any(m =>
+            m.Contract is not null
+            && m.Contract.Status == ContractStatus.Signed
+            && m.Contract.IsFullySigned);
+        var canCancel = r.Status is SupplyRequestStatus.Pending or SupplyRequestStatus.Matched
+            && !hasSigned;
+        var canRerun = r.Status is SupplyRequestStatus.Pending or SupplyRequestStatus.Matched;
+
+        return new FactorySupplyRequestDetailDto
+        {
+            RequestId = r.RequestId,
+            CropTypeId = r.CropTypeId,
+            Crop = r.CropType?.Name ?? string.Empty,
+            QuantityTons = r.QuantityTons,
+            PricePerTon = r.PricePerTon,
+            DeliveryDate = r.DeliveryDate,
+            Status = r.Status.ToString(),
+            CreatedAt = r.CreatedAt,
+            IdempotencyKey = r.IdempotencyKey,
+            QualitySpecsRaw = r.QualitySpecs,
+            Quality = quality,
+            MatchCount = matches.Count,
+            ActiveMatchCount = active,
+            CanCancel = canCancel,
+            CanRerunAgent = canRerun,
+            CanUpdateDeliveryTerms = canCancel,
+            DeliveryPoint = r.DeliveryPoint.ToString(),
+            FreightPayer = r.FreightPayer.ToString(),
+            TransitRisk = r.TransitRisk.ToString()
+        };
+    }
+
+    private static Result<(DeliveryPoint Point, DealParty Freight, DealParty Transit)> ResolveDeliveryTerms(
+        string? deliveryPoint,
+        string? freightPayer,
+        string? transitRisk,
+        bool requirePoint)
+    {
+        if (requirePoint && string.IsNullOrWhiteSpace(deliveryPoint))
+            return Result<(DeliveryPoint, DealParty, DealParty)>.Failure(FactoryErrors.DeliveryTermsRequired);
+
+        DeliveryPoint? point = null;
+        if (!string.IsNullOrWhiteSpace(deliveryPoint))
+        {
+            if (!DeliveryTermsPolicy.TryParsePoint(deliveryPoint, out var parsedPoint))
+                return Result<(DeliveryPoint, DealParty, DealParty)>.Failure(FactoryErrors.InvalidDeliveryTerms);
+            point = parsedPoint;
+        }
+
+        DealParty? freight = null;
+        if (!string.IsNullOrWhiteSpace(freightPayer))
+        {
+            if (!DeliveryTermsPolicy.TryParseParty(freightPayer, out var parsedFreight))
+                return Result<(DeliveryPoint, DealParty, DealParty)>.Failure(FactoryErrors.InvalidDeliveryTerms);
+            freight = parsedFreight;
+        }
+
+        DealParty? transit = null;
+        if (!string.IsNullOrWhiteSpace(transitRisk))
+        {
+            if (!DeliveryTermsPolicy.TryParseParty(transitRisk, out var parsedTransit))
+                return Result<(DeliveryPoint, DealParty, DealParty)>.Failure(FactoryErrors.InvalidDeliveryTerms);
+            transit = parsedTransit;
+        }
+
+        var resolved = DeliveryTermsPolicy.Resolve(point, freight, transit);
+        return Result<(DeliveryPoint, DealParty, DealParty)>.Success(
+            (resolved.Point, resolved.FreightPayer, resolved.TransitRisk));
+    }
+
+    private static List<FactoryAttentionItemDto> BuildFactoryAttention(
+        IReadOnlyList<SupplyRequest> requests,
+        IReadOnlyList<FarmMatch> matches,
+        IReadOnlyList<Contract> contracts)
+    {
+        var items = new List<FactoryAttentionItemDto>();
+
+        var awaitingSignature = contracts.Count(c =>
+            !c.IsFactorySigned
+            && c.Status is ContractStatus.PendingSignature
+                or ContractStatus.PendingFactorySignature
+                or ContractStatus.PendingFarmSignature
+                or ContractStatus.Draft);
+        if (awaitingSignature > 0)
+        {
+            items.Add(new FactoryAttentionItemDto
+            {
+                Id = "sign",
+                Kind = "signature",
+                Tone = "attention",
+                Count = awaitingSignature,
+                Title = "Contracts awaiting your signature",
+                Status = $"{awaitingSignature} pending",
+                Cta = "Review contracts",
+                Link = "/factory/contracts"
+            });
+        }
+
+        var counters = matches.Count(m => m.Status == FarmMatchStatus.Countered);
+        if (counters > 0)
+        {
+            items.Add(new FactoryAttentionItemDto
+            {
+                Id = "counter",
+                Kind = "counter",
+                Tone = "attention",
+                Count = counters,
+                Title = "Counter-offers waiting",
+                Status = $"{counters} open",
+                Cta = "Review counters",
+                Link = "/factory/matches"
+            });
+        }
+
+        var receiveQc = contracts.Count(c =>
+            c.Fulfillment is not null
+            && c.Fulfillment.Status is FulfillmentStatus.Shipped or FulfillmentStatus.Received);
+        if (receiveQc > 0)
+        {
+            items.Add(new FactoryAttentionItemDto
+            {
+                Id = "receive-qc",
+                Kind = "fulfillment",
+                Tone = "attention",
+                Count = receiveQc,
+                Title = "Shipments to receive or QC",
+                Status = $"{receiveQc} awaiting action",
+                Cta = "Open fulfillment",
+                Link = "/factory/contracts"
+            });
+        }
+
+        var overdue = contracts
+            .SelectMany(c => c.Transactions ?? Array.Empty<Transaction>())
+            .Count(t =>
+                t.DueDate is not null
+                && t.DueDate.Value.Date < DateTime.UtcNow.Date
+                && t.Status == TransactionStatus.Pending);
+        if (overdue > 0)
+        {
+            items.Add(new FactoryAttentionItemDto
+            {
+                Id = "overdue-pay",
+                Kind = "payment",
+                Tone = "attention",
+                Count = overdue,
+                Title = "Overdue payment milestones",
+                Status = $"{overdue} overdue",
+                Cta = "Mark paid",
+                Link = "/factory/contracts"
+            });
+        }
+
+        var disputes = contracts
+            .SelectMany(c => c.Disputes ?? Array.Empty<Dispute>())
+            .Count(d => d.Status is DisputeStatus.Open or DisputeStatus.UnderReview);
+        if (disputes > 0)
+        {
+            items.Add(new FactoryAttentionItemDto
+            {
+                Id = "disputes",
+                Kind = "dispute",
+                Tone = "attention",
+                Count = disputes,
+                Title = "Open disputes",
+                Status = $"{disputes} active",
+                Cta = "Review disputes",
+                Link = "/factory/contracts"
+            });
+        }
+
+        var pendingRequests = requests.Count(r => r.Status == SupplyRequestStatus.Pending);
+        if (pendingRequests > 0 && items.Count < 5)
+        {
+            items.Add(new FactoryAttentionItemDto
+            {
+                Id = "pending-requests",
+                Kind = "request",
+                Tone = "info",
+                Count = pendingRequests,
+                Title = "Supply requests without matches",
+                Status = $"{pendingRequests} pending",
+                Cta = "View requests",
+                Link = "/factory/requests"
+            });
+        }
+
+        return items.Take(5).ToList();
+    }
+
+    private static FactoryPayablesSummaryDto BuildFactoryPayables(IReadOnlyList<Contract> contracts)
+    {
+        var txs = contracts
+            .Where(c => c.Status == ContractStatus.Signed && c.IsFullySigned)
+            .SelectMany(c => c.Transactions ?? Array.Empty<Transaction>())
+            .Where(t => t.Status != TransactionStatus.Voided)
+            .ToList();
+
+        return new FactoryPayablesSummaryDto
+        {
+            PendingAmount = txs.Where(t => t.Status == TransactionStatus.Pending).Sum(t => t.Amount),
+            AwaitingFarmConfirmAmount = txs.Where(t => t.Status == TransactionStatus.MarkedPaid).Sum(t => t.Amount),
+            PaidConfirmedAmount = txs.Where(t => t.Status == TransactionStatus.Completed).Sum(t => t.Amount),
+            OverdueAmount = txs
+                .Where(t =>
+                    t.Status == TransactionStatus.Pending
+                    && t.DueDate is not null
+                    && t.DueDate.Value.Date < DateTime.UtcNow.Date)
+                .Sum(t => t.Amount)
+        };
+    }
+
+    private static decimal? BuildOnTimeRate(IReadOnlyList<FarmMatch> signedMatches)
+    {
+        var scored = 0;
+        var onTime = 0;
+        foreach (var m in signedMatches)
+        {
+            var fulfillment = m.Contract?.Fulfillment;
+            var delivery = m.SupplyRequest?.DeliveryDate;
+            if (fulfillment is null
+                || fulfillment.Status != FulfillmentStatus.Fulfilled
+                || fulfillment.ReceivedAt is null
+                || delivery is null)
+                continue;
+
+            scored++;
+            if (fulfillment.ReceivedAt.Value.Date <= delivery.Value.Date.AddDays(3))
+                onTime++;
+        }
+
+        return scored == 0 ? null : Math.Round((decimal)onTime / scored * 100m, 1);
+    }
+
+    private static decimal? BuildQcIssueRate(IReadOnlyList<FarmMatch> signedMatches)
+    {
+        var withQc = 0;
+        var issues = 0;
+        foreach (var m in signedMatches)
+        {
+            var f = m.Contract?.Fulfillment;
+            if (f is null || f.QualityCheckedAt is null)
+                continue;
+            withQc++;
+            var requested = m.SupplyRequest?.QuantityTons;
+            if (f.DiscountPercent > 0
+                || f.SpecsMet == false
+                || (f.AcceptedQuantityTons is not null
+                    && requested is not null
+                    && f.AcceptedQuantityTons < requested))
+                issues++;
+        }
+
+        return withQc == 0 ? null : Math.Round((decimal)issues / withQc * 100m, 1);
+    }
+
+    private static decimal? BuildAvgQcDiscount(IReadOnlyList<FarmMatch> signedMatches)
+    {
+        var discounts = signedMatches
+            .Select(m => m.Contract?.Fulfillment)
+            .Where(f => f is not null && f.QualityCheckedAt is not null)
+            .Select(f => f!.DiscountPercent)
+            .ToList();
+        return discounts.Count == 0 ? null : Math.Round(discounts.Average(), 1);
     }
 
     public async Task<Result<List<FactoryMatchItemDto>>> GetRequestMatchesAsync(
@@ -294,7 +843,21 @@ public class FactoryService : IFactoryService
                 DistanceKm = distanceKm,
                 UsedGovernorateFallback = usedFallback,
                 Status = m.Status.ToString(),
-                CreatedAt = m.CreatedAt
+                CreatedAt = m.CreatedAt,
+                ContractId = m.Contract?.ContractId,
+                ContractFullySigned = m.Contract?.Status == ContractStatus.Signed,
+                CanMessage = m.Contract?.Status == ContractStatus.Signed,
+                RequestQuantityTons = m.SupplyRequest?.QuantityTons,
+                RequestPricePerTon = m.SupplyRequest?.PricePerTon,
+                RequestDeliveryDate = m.SupplyRequest?.DeliveryDate,
+                CounterQuantityTons = m.CounterQuantityTons,
+                CounterPricePerTon = m.CounterPricePerTon,
+                CounterDeliveryDate = m.CounterDeliveryDate,
+                CounterNote = m.CounterNote,
+                CounterAccepted = m.CounterAccepted,
+                EffectiveQuantityTons = MatchCommercialTerms.QuantityTons(m),
+                EffectivePricePerTon = MatchCommercialTerms.PricePerTon(m),
+                EffectiveDeliveryDate = MatchCommercialTerms.DeliveryDate(m)
             };
         }).ToList();
 
@@ -311,10 +874,11 @@ public class FactoryService : IFactoryService
         if (match is null)
             return Result.Failure(FactoryErrors.MatchNotFound);
 
-        if (match.Status != FarmMatchStatus.Proposed)
+        if (match.Status != FarmMatchStatus.Proposed && match.Status != FarmMatchStatus.Countered)
             return Result.Failure(FactoryErrors.MatchCannotExclude);
 
         match.Status = FarmMatchStatus.Rejected;
+        match.IsExcludedByFactory = true;
         _farmMatchRepository.Update(match);
 
         var contract = match.Contract;
@@ -329,8 +893,121 @@ public class FactoryService : IFactoryService
             _contractRepository.Update(contract);
         }
 
+        var farmUserId = match.Farm?.UserId;
+        if (farmUserId is Guid uid && uid != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = uid,
+                Title = "notifications.types.matchExcluded.title",
+                Message = "notifications.types.matchExcluded.body",
+                Type = "MatchExcluded",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
         await _unitOfWork.SaveChangesAsync();
         return Result.Success();
+    }
+
+    public async Task<Result> AcceptCounterOfferAsync(Guid userId, Guid matchId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result.Failure(FactoryErrors.FactoryNotFound);
+
+        var match = await _factoryRepository.GetMatchForFactoryAsync(factory.FactoryId, matchId);
+        if (match is null)
+            return Result.Failure(FactoryErrors.MatchNotFound);
+
+        if (match.Status != FarmMatchStatus.Countered || !MatchCommercialTerms.HasCounter(match))
+            return Result.Failure(FactoryErrors.MatchNotCountered);
+
+        match.CounterAccepted = true;
+        match.Status = FarmMatchStatus.Proposed;
+        _farmMatchRepository.Update(match);
+
+        if (match.Farm?.UserId is Guid farmUserId && farmUserId != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = farmUserId,
+                Title = "Counter-offer accepted",
+                Message = $"{factory.Name} accepted your counter terms. You can proceed to the contract.",
+                Type = "Match",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+        return Result.Success();
+    }
+
+    public async Task<Result> RejectCounterOfferAsync(Guid userId, Guid matchId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result.Failure(FactoryErrors.FactoryNotFound);
+
+        var match = await _factoryRepository.GetMatchForFactoryAsync(factory.FactoryId, matchId);
+        if (match is null)
+            return Result.Failure(FactoryErrors.MatchNotFound);
+
+        if (match.Status != FarmMatchStatus.Countered)
+            return Result.Failure(FactoryErrors.MatchNotCountered);
+
+        match.Status = FarmMatchStatus.Rejected;
+        match.CounterAccepted = false;
+        _farmMatchRepository.Update(match);
+
+        if (match.Farm?.UserId is Guid farmUserId && farmUserId != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = farmUserId,
+                Title = "Counter-offer rejected",
+                Message = $"{factory.Name} rejected your counter terms.",
+                Type = "Match",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+        return Result.Success();
+    }
+
+    public async Task<Result<List<FarmListingDto>>> GetPublishedListingsAsync(
+        Guid? cropTypeId = null,
+        string? governorate = null)
+    {
+        var crops = await _factoryRepository.GetPublishedFarmCropsAsync(cropTypeId, governorate);
+        var listings = crops.Select(fc => new FarmListingDto
+        {
+            FarmId = fc.FarmId,
+            FarmName = fc.Farm.Name,
+            Governorate = fc.Farm.Governorate,
+            IsVerified = fc.Farm.IsVerified,
+            RiskScore = fc.Farm.RiskScore,
+            AverageRating = fc.Farm.AverageRating,
+            CropTypeId = fc.CropTypeId,
+            CropName = fc.CropType.Name,
+            AvailableQuantityTons = fc.AvailableQuantityTons,
+            AvailableFrom = fc.AvailableFrom,
+            AvailableTo = fc.AvailableTo,
+            MinPricePerTon = fc.MinPricePerTon,
+            CoverImageUrl = fc.Farm.FarmImages
+                .OrderBy(i => i.SortOrder)
+                .Select(i => i.FileUrl)
+                .FirstOrDefault()
+        }).ToList();
+
+        return Result<List<FarmListingDto>>.Success(listings);
     }
 
     public async Task<Result<List<FactoryMatchedFarmDto>>> GetMatchedFarmsAsync(Guid userId)
@@ -406,21 +1083,62 @@ public class FactoryService : IFactoryService
             return Result<List<FactoryConversationDto>>.Failure(FactoryErrors.FactoryNotFound);
 
         var matches = await _factoryRepository.GetConversationsAsync(factory.FactoryId);
-        var dtos = matches.Select(m =>
+        var dtos = matches
+            .Where(m => m.Contract is not null && m.Contract.Status == ContractStatus.Signed)
+            .Select(m =>
         {
             var lastMsg = m.Messages.OrderByDescending(x => x.CreatedAt).FirstOrDefault();
             return new FactoryConversationDto
             {
                 MatchId = m.MatchId,
+                FarmId = m.FarmId,
                 FarmName = m.Farm?.Name ?? "Unknown",
                 CropName = m.SupplyRequest?.CropType?.Name,
+                Status = m.Status.ToString(),
+                MatchCreatedAt = m.CreatedAt,
+                QuantityTons = MatchCommercialTerms.QuantityTons(m),
+                PricePerTon = MatchCommercialTerms.PricePerTon(m),
+                DeliveryDate = MatchCommercialTerms.DeliveryDate(m),
+                ContractId = m.Contract?.ContractId,
+                ContractFullySigned = true,
                 LastMessage = lastMsg?.Content,
                 LastMessageAt = lastMsg?.CreatedAt,
                 UnreadCount = m.Messages.Count(x => !x.IsRead && x.ReceiverId == factory.UserId)
             };
-        }).OrderByDescending(d => d.LastMessageAt).ToList();
+        }).OrderByDescending(d => d.LastMessageAt ?? d.MatchCreatedAt).ToList();
 
         return Result<List<FactoryConversationDto>>.Success(dtos);
+    }
+
+    public async Task<Result<FactoryActiveMatchDto>> GetActiveMatchWithFarmAsync(Guid userId, Guid farmId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactoryActiveMatchDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var matches = await _factoryRepository.GetMatchesWithFarmForFactoryAsync(
+            factory.FactoryId,
+            farmId);
+        var match = matches
+            .Where(m => m.Status is not FarmMatchStatus.Rejected and not FarmMatchStatus.Expired)
+            .OrderByDescending(m => m.CreatedAt)
+            .FirstOrDefault()
+            ?? matches.OrderByDescending(m => m.CreatedAt).FirstOrDefault();
+
+        if (match is null)
+            return Result<FactoryActiveMatchDto>.Failure(FactoryErrors.MatchNotFound);
+
+        return Result<FactoryActiveMatchDto>.Success(new FactoryActiveMatchDto
+        {
+            MatchId = match.MatchId,
+            FarmId = farmId,
+            FarmName = match.Farm?.Name ?? "Unknown",
+            CropName = match.SupplyRequest?.CropType?.Name,
+            CreatedAt = match.CreatedAt,
+            ContractId = match.Contract?.ContractId,
+            ContractFullySigned = match.Contract?.Status == ContractStatus.Signed,
+            CanMessage = match.Contract?.Status == ContractStatus.Signed
+        });
     }
 
     public async Task<Result<List<FactoryMessageDto>>> GetMessagesAsync(Guid userId, Guid matchId)
@@ -432,6 +1150,9 @@ public class FactoryService : IFactoryService
         var match = await _factoryRepository.GetMatchForFactoryAsync(factory.FactoryId, matchId);
         if (match is null)
             return Result<List<FactoryMessageDto>>.Failure(FactoryErrors.ConversationNotFound);
+
+        if (match.Contract is null || match.Contract.Status != ContractStatus.Signed)
+            return Result<List<FactoryMessageDto>>.Failure(FactoryErrors.CannotSendMessage);
 
         var messages = await _factoryRepository.GetMessagesAsync(factory.FactoryId, matchId);
         var dtos = messages.Select(m => new FactoryMessageDto
@@ -457,6 +1178,9 @@ public class FactoryService : IFactoryService
         var match = await _factoryRepository.GetMatchForFactoryAsync(factory.FactoryId, matchId);
         if (match is null)
             return Result.Failure(FactoryErrors.ConversationNotFound);
+
+        if (match.Contract is null || match.Contract.Status != ContractStatus.Signed)
+            return Result.Failure(FactoryErrors.CannotSendMessage);
 
         if (string.IsNullOrWhiteSpace(content))
             return Result.Failure(FactoryErrors.InvalidAction);
@@ -527,6 +1251,7 @@ public class FactoryService : IFactoryService
                 if (!ContractExecution.TryReplaceGeneratedText(contract, match, request.ContractText))
                     return Result<PersistContractResponse>.Failure(FactoryErrors.MatchNotProposed);
 
+                await _integrity.SupersedeActiveAsync(contract.ContractId);
                 _contractRepository.Update(contract);
             }
         }
@@ -635,6 +1360,9 @@ public class FactoryService : IFactoryService
             return Result<FactoryContractDto>.Failure(FactoryErrors.GovernorateMismatch);
         }
 
+        if (!MatchEligibilityGuard.IsStillEligible(match))
+            return Result<FactoryContractDto>.Failure(FactoryErrors.EligibilityChanged);
+
         if (!ContractExecution.CanSign(match))
             return Result<FactoryContractDto>.Failure(FactoryErrors.MatchNotProposed);
 
@@ -650,10 +1378,38 @@ public class FactoryService : IFactoryService
             return Result<FactoryContractDto>.Failure(FactoryErrors.ContractNotPending);
         }
 
+        if (!ContractDealFunding.TryGetDealTotalEgp(match, out var dealTotalEgp))
+            return Result<FactoryContractDto>.Failure(WalletErrors.DealValueInvalid);
+
+        var holdAmount = _walletService.GetDealHoldAmountEgp(dealTotalEgp);
+
+        // Always require factory liquidity before factory signs (even as first signer).
+        var fundsOk = await _walletService.EnsureFactoryAvailableAsync(factory.FactoryId, holdAmount);
+        if (fundsOk.IsFailure)
+            return Result<FactoryContractDto>.Failure(fundsOk.Error!);
+
         contract.FactorySignedAt = DateTime.UtcNow;
         // FarmSignedAt must remain unchanged.
         contract.RefreshSignatureStatus();
         ContractExecution.AcceptMatchIfFullySigned(contract);
+
+        if (contract.IsFullySigned && !contract.HasDealFundsHeld)
+        {
+            var hold = await _walletService.HoldDealFundsAsync(
+                factory.FactoryId,
+                contract.ContractId,
+                holdAmount,
+                $"Deal funds held on full signature for contract {contract.ContractId:N}");
+            if (hold.IsFailure)
+                return Result<FactoryContractDto>.Failure(hold.Error!);
+
+            contract.FundsHeldAt = DateTime.UtcNow;
+            contract.FundsHeldEgp = holdAmount;
+        }
+
+        if (contract.IsFullySigned)
+            await _integrity.AnchorIfFullySignedAsync(contract);
+
         _contractRepository.Update(contract);
 
         var farmUserId = contract.FarmMatch?.Farm?.UserId;
@@ -683,7 +1439,10 @@ public class FactoryService : IFactoryService
             await _fulfillmentService.EnsureCreatedForSignedContractAsync(
                 contract.ContractId,
                 userId,
-                contract.FarmMatch?.SupplyRequest?.DeliveryDate);
+                contract.FarmMatch?.SupplyRequest?.DeliveryDate,
+                contract.FarmMatch?.SupplyRequest?.DeliveryPoint,
+                contract.FarmMatch?.SupplyRequest?.FreightPayer,
+                contract.FarmMatch?.SupplyRequest?.TransitRisk);
             await _paymentMilestoneService.EnsureCreatedForSignedContractAsync(
                 contract.ContractId,
                 userId,
@@ -703,12 +1462,20 @@ public class FactoryService : IFactoryService
         if (contract is null)
             return Result<FactoryContractDto>.Failure(FactoryErrors.ContractNotFound);
 
-        if (contract.Status == ContractStatus.Signed || contract.Status == ContractStatus.Cancelled)
+        if (contract.Status == ContractStatus.Cancelled)
             return Result<FactoryContractDto>.Failure(FactoryErrors.ContractNotPending);
+
+        if (contract.Status == ContractStatus.Signed)
+            return await UnwindSignedContractAsync(
+                userId,
+                factory.Name,
+                contract,
+                asFarm: false);
 
         contract.Status = ContractStatus.Cancelled;
         contract.ClearSignatures();
         ContractExecution.RejectMatchIfProposed(contract);
+        await _integrity.SupersedeActiveAsync(contract.ContractId);
         _contractRepository.Update(contract);
 
         var farmUserId = contract.FarmMatch?.Farm?.UserId;
@@ -771,6 +1538,49 @@ public class FactoryService : IFactoryService
         return Result<(byte[], string)>.Success((bytes, $"contract-{contract.ContractId:N}.pdf"));
     }
 
+    private async Task<Result<FactoryContractDto>> UnwindSignedContractAsync(
+        Guid userId,
+        string actorName,
+        Contract contract,
+        bool asFarm)
+    {
+        var reason = asFarm
+            ? "Signed contract cancelled by farm"
+            : "Signed contract cancelled by factory";
+
+        var unwind = await _escrowPayments.UnwindSignedDealAsync(contract.ContractId, userId, reason);
+        if (unwind.IsFailure)
+            return Result<FactoryContractDto>.Failure(unwind.Error!);
+
+        contract.Status = ContractStatus.Cancelled;
+        await _integrity.SupersedeActiveAsync(contract.ContractId);
+        _contractRepository.Update(contract);
+
+        var counterparty = asFarm
+            ? contract.FarmMatch?.SupplyRequest?.Factory?.UserId
+            : contract.FarmMatch?.Farm?.UserId;
+        if (counterparty is Guid uid && uid != Guid.Empty && uid != userId)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = uid,
+                Title = "Signed contract cancelled",
+                Message = $"{actorName} cancelled the signed supply contract. Held funds were returned to the factory wallet.",
+                Type = "ContractCancelled",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        var saved = await TrySaveFactoryContractAsync();
+        if (saved.IsFailure)
+            return Result<FactoryContractDto>.Failure(saved.Error!);
+
+        await _fulfillmentService.VoidForContractAsync(contract.ContractId, userId, reason);
+        return Result<FactoryContractDto>.Success(MapContract(contract));
+    }
+
     private static FactoryContractDto MapContract(Contract c) => new()
     {
         ContractId = c.ContractId,
@@ -793,9 +1603,15 @@ public class FactoryService : IFactoryService
         FarmSigned = c.IsFarmSigned,
         FactorySignedAt = c.FactorySignedAt,
         FarmSignedAt = c.FarmSignedAt,
+        FarmUserId = c.FarmMatch?.Farm?.UserId,
+        FactoryUserId = c.FarmMatch?.SupplyRequest?.Factory?.UserId,
+        CanUnwindSigned = c.Status == ContractStatus.Signed
+            && (c.Fulfillment is null
+                || c.Fulfillment.Status is FulfillmentStatus.Planned or FulfillmentStatus.Shipped),
         UpdatedAt = c.SignedAt ?? c.FarmSignedAt ?? c.FactorySignedAt ?? c.CreatedAt,
         MatchScore = c.FarmMatch?.MatchScore,
-        RiskScore = c.FarmMatch?.RiskScore
+        RiskScore = c.FarmMatch?.RiskScore,
+        Integrity = ContractIntegrityService.MapActive(c)
     };
 
     /// <summary>

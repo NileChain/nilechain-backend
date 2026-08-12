@@ -14,6 +14,11 @@ public class FarmConfiguration : IEntityTypeConfiguration<Farm>
         builder.Property(f => f.Name).HasMaxLength(255).IsRequired();
         builder.Property(f => f.Location).HasMaxLength(255);
         builder.Property(f => f.Governorate).HasMaxLength(100);
+        builder.Property(f => f.Description).HasMaxLength(2000);
+        builder.Property(f => f.BankName).HasMaxLength(120);
+        builder.Property(f => f.AccountHolderName).HasMaxLength(120);
+        builder.Property(f => f.BankAccountNumber).HasMaxLength(64);
+        builder.Property(f => f.Iban).HasMaxLength(34);
         builder.Property(f => f.Latitude).HasPrecision(9, 6);
         builder.Property(f => f.Longitude).HasPrecision(9, 6);
         builder.Property(f => f.SizeInFeddans).HasPrecision(10, 2);
@@ -27,9 +32,5 @@ public class FarmConfiguration : IEntityTypeConfiguration<Farm>
             .WithOne(u => u.Farm)
             .HasForeignKey<Farm>(f => f.UserId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasMany(f => f.CropTypes)
-            .WithMany(c => c.Farms)
-            .UsingEntity(j => j.ToTable("FarmCropType"));
     }
 }

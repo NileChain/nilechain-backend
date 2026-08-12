@@ -407,7 +407,15 @@ public class GeographicExactProtectionTests
             Longitude = lon,
             ProfileComplete = true,
             CreatedAt = DateTime.UtcNow,
-            CropTypes = new List<CropType> { crop }
+            FarmCrops = new List<FarmCrop>
+            {
+                new()
+                {
+                    CropTypeId = crop.CropTypeId,
+                    CropType = crop,
+                    AvailableQuantityTons = 100m
+                }
+            }
         };
         db.Farm.Add(farm);
         return farm;

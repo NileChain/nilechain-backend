@@ -5,6 +5,7 @@ using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Services;
 using NileChain.AI.Sbg;
+using NileChain.AI.Weather;
 using NileChain.Domain.Interfaces;
 
 namespace NileChain.AI;
@@ -85,6 +86,12 @@ public static class DependencyInjection
             new Lazy<ContractAgent>(() => sp.GetRequiredService<ContractAgent>()));
         services.AddScoped<OrchestratorAgent>();
         services.AddScoped<ProactiveMonitorAgent>();
+        services.AddScoped<CopilotChatService>();
+        services.AddHttpClient<IWeatherRiskClient, OpenMeteoWeatherClient>(client =>
+        {
+            client.BaseAddress = new Uri("https://api.open-meteo.com/");
+            client.Timeout = TimeSpan.FromSeconds(6);
+        });
 
         services.Configure<MonitoringOptions>(configuration.GetSection(MonitoringOptions.SectionName));
 

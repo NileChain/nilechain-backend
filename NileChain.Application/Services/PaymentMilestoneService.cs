@@ -19,6 +19,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         "Status tracking only — not a payment gateway.";
 
     private readonly IPaymentMilestoneRepository _milestones;
+    private readonly IEscrowTransactionRepository _escrows;
     private readonly IDisputeRepository _disputes;
     private readonly IFarmRepository _farms;
     private readonly IFactoryRepository _factories;
@@ -26,10 +27,13 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
     private readonly IRepository<Notification> _notifications;
     private readonly IUnitOfWork _unitOfWork;
     private readonly PaymentMilestoneOptions _options;
+    private readonly MockPaymentOptions _paymentOptions;
     private readonly ILogger<PaymentMilestoneService> _logger;
+    private readonly ICloudinaryService _cloudinary;
 
     public PaymentMilestoneService(
         IPaymentMilestoneRepository milestones,
+        IEscrowTransactionRepository escrows,
         IDisputeRepository disputes,
         IFarmRepository farms,
         IFactoryRepository factories,
@@ -37,9 +41,12 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         IRepository<Notification> notifications,
         IUnitOfWork unitOfWork,
         IOptions<PaymentMilestoneOptions> options,
-        ILogger<PaymentMilestoneService> logger)
+        IOptions<MockPaymentOptions> paymentOptions,
+        ILogger<PaymentMilestoneService> logger,
+        ICloudinaryService cloudinary)
     {
         _milestones = milestones;
+        _escrows = escrows;
         _disputes = disputes;
         _farms = farms;
         _factories = factories;
@@ -47,7 +54,9 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         _notifications = notifications;
         _unitOfWork = unitOfWork;
         _options = options.Value;
+        _paymentOptions = paymentOptions.Value;
         _logger = logger;
+        _cloudinary = cloudinary;
     }
 
     public async Task<Result<PaymentMilestoneScheduleDto>> GetByContractAsync(
@@ -64,6 +73,21 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         var totalOk = ContractCommercialTotal.TryCompute(supply, out var total, out var reason);
 
         var all = await _milestones.GetByContractIdAsync(contractId);
+        var farm = contract.FarmMatch?.Farm;
+        var frozen = await _disputes.HasActiveDisputeAsync(contractId);
+        // Factory-only: off-platform transfer hint on signed-contract schedules.
+        var payout = asFarm ? null : MapPayout(farm);
+
+        // Backfill: older signed contracts (or failed create-on-sign) open schedule on first read.
+        if (all.Count == 0
+            && contract.Status == ContractStatus.Signed
+            && contract.IsFullySigned)
+        {
+            await EnsureCreatedForSignedContractAsync(contractId, userId, supply);
+            all = await _milestones.GetByContractIdAsync(contractId);
+            totalOk = ContractCommercialTotal.TryCompute(supply, out total, out reason);
+        }
+
         if (all.Count == 0)
         {
             return Result<PaymentMilestoneScheduleDto>.Success(new PaymentMilestoneScheduleDto
@@ -72,8 +96,14 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 ContractTotal = totalOk ? total : null,
                 ContractTotalUnavailable = !totalOk,
                 ContractTotalUnavailableReason = totalOk ? null : reason,
-                Disclaimer = StatusTrackingDisclaimer,
-                Milestones = []
+                Disclaimer = ResolveDisclaimer(),
+                MockGatewayEnabled = _paymentOptions.MockGatewayEnabled,
+                WalletEnabled = _paymentOptions.WalletEnabled,
+                PlatformFeePercent = ResolveFeePercent(),
+                FarmPayoutDetails = payout,
+                PaymentsFrozenByDispute = frozen,
+                Milestones = [],
+                Escrows = []
             });
         }
 
@@ -82,23 +112,35 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             .OrderBy(t => t.Sequence)
             .ToList();
 
+        var escrows = await _escrows.GetByContractIdAsync(contractId);
+
         return Result<PaymentMilestoneScheduleDto>.Success(MapSchedule(
             contractId,
             totalOk ? total : null,
             totalOk ? null : reason,
-            rows));
+            rows,
+            payout,
+            frozen,
+            escrows));
     }
 
     public Task<Result<PaymentMilestoneScheduleDto>> MarkPaidAsync(
         Guid factoryUserId,
         Guid contractId,
-        Guid transactionId) =>
-        TransitionAsync(
+        Guid transactionId,
+        Microsoft.AspNetCore.Http.IFormFile? receipt = null)
+    {
+        if (_paymentOptions.MockGatewayEnabled)
+            return Task.FromResult(Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.UseMockPay));
+
+        return TransitionAsync(
             factoryUserId,
             contractId,
             transactionId,
             asFarm: false,
-            TransactionStatus.MarkedPaid);
+            TransactionStatus.MarkedPaid,
+            receipt);
+    }
 
     public Task<Result<PaymentMilestoneScheduleDto>> ConfirmReceivedAsync(
         Guid farmUserId,
@@ -116,16 +158,57 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         Guid actorUserId,
         SupplyRequest? supplyRequest)
     {
+        try
+        {
+            await EnsureCreatedCoreAsync(contractId, actorUserId, supplyRequest);
+        }
+        catch (Exception ex)
+        {
+            // Never fail the signing response because milestone creation failed —
+            // GetByContractAsync will backfill on next open.
+            _logger.LogError(
+                ex,
+                "Payment milestone EnsureCreated failed for ContractId={ContractId}",
+                contractId);
+        }
+    }
+
+    private async Task EnsureCreatedCoreAsync(
+        Guid contractId,
+        Guid actorUserId,
+        SupplyRequest? supplyRequest)
+    {
         if (await _milestones.HasActiveScheduleAsync(contractId))
             return;
 
+        // Prefer caller-supplied supply; reload contract flags from the tracked/DB entity.
         var contract = await _contracts.GetByIdAsync(contractId);
-        if (contract is null
-            || contract.Status != ContractStatus.Signed
-            || !contract.IsFullySigned)
+        if (contract is null)
             return;
 
+        // After SaveChanges in approve, Status/signatures must already be Signed.
+        // If a stale tracked instance is missing timestamps, still allow create when
+        // the caller passed a supply request (signing path) OR DB says fully signed.
+        var looksSigned = contract.Status == ContractStatus.Signed && contract.IsFullySigned;
+        if (!looksSigned && supplyRequest is null)
+            return;
+        if (!looksSigned && supplyRequest is not null)
+        {
+            // Signing path: trust the caller after full signature; force status check soft.
+            if (!contract.IsFullySigned && contract.FactorySignedAt is null && contract.FarmSignedAt is null)
+                return;
+        }
+
         var supply = supplyRequest ?? contract.FarmMatch?.SupplyRequest;
+        if (supply is null)
+        {
+            // Reload supply via farms/factories not available here — try match nav if tracked.
+            _logger.LogWarning(
+                "Payment milestone schedule skipped for ContractId={ContractId}: supply request missing.",
+                contractId);
+            return;
+        }
+
         if (!ContractCommercialTotal.TryCompute(supply, out var contractTotal, out var reason))
         {
             _logger.LogWarning(
@@ -138,10 +221,22 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         var steps = NormalizeSchedule(_options.Schedule);
         if (steps.Count == 0)
         {
-            _logger.LogWarning(
-                "Payment milestone schedule skipped for ContractId={ContractId}: empty or invalid PaymentMilestones:Schedule config.",
-                contractId);
-            return;
+            // Config bind may wipe defaults — fall back to 30/70.
+            steps =
+            [
+                new PaymentMilestoneStepOptions
+                {
+                    Key = "Deposit",
+                    Label = "Deposit (advance)",
+                    Percent = 30
+                },
+                new PaymentMilestoneStepOptions
+                {
+                    Key = "OnDelivery",
+                    Label = "On delivery",
+                    Percent = 70
+                }
+            ];
         }
 
         var generation = await _milestones.GetMaxScheduleGenerationAsync(contractId) + 1;
@@ -157,6 +252,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 2,
                 MidpointRounding.AwayFromZero);
 
+            var dueDate = ResolveMilestoneDueDate(step.Key, i, steps.Count, now, supply.DeliveryDate);
             var txRow = new Transaction
             {
                 TransactionId = Guid.NewGuid(),
@@ -168,6 +264,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 Percent = step.Percent,
                 Amount = amount,
                 Status = TransactionStatus.Pending,
+                DueDate = dueDate,
                 CreatedAt = now
             };
             rows.Add(txRow);
@@ -178,7 +275,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 FromStatus = null,
                 ToStatus = TransactionStatus.Pending,
                 ActorUserId = actorUserId,
-                Note = "Payment milestone schedule opened after full signature (status tracking only)",
+                Note = "Payment milestone schedule opened after full signature",
                 CreatedAt = now
             });
         }
@@ -193,6 +290,11 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             await _milestones.AddRangeAsync(rows);
             await _milestones.AddEventsAsync(events);
             await _unitOfWork.SaveChangesAsync();
+            _logger.LogInformation(
+                "Created {Count} payment milestones for ContractId={ContractId} total={Total}",
+                rows.Count,
+                contractId,
+                contractTotal);
         }
         catch (DbUpdateException ex) when (UniqueConstraintViolation.IsViolation(ex))
         {
@@ -205,7 +307,10 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         var all = await _milestones.GetByContractIdAsync(contractId, includeEvents: false);
         var active = all.Where(t => PaymentMilestoneTransitions.CanVoid(t.Status)).ToList();
         if (active.Count == 0)
+        {
+            await FailActiveEscrowsForContractAsync(contractId, actorUserId, reason);
             return;
+        }
 
         await using var tx = await _unitOfWork.BeginTransactionAsync();
         var now = DateTime.UtcNow;
@@ -235,6 +340,26 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
 
         await _unitOfWork.SaveChangesAsync();
         await tx.CommitAsync();
+
+        await FailActiveEscrowsForContractAsync(contractId, actorUserId, reason);
+    }
+
+    private async Task FailActiveEscrowsForContractAsync(Guid contractId, Guid actorUserId, string reason)
+    {
+        var escrows = await _escrows.GetByContractIdAsync(contractId);
+        var now = DateTime.UtcNow;
+        foreach (var e in escrows.Where(x =>
+                     x.Status is EscrowStatus.Created or EscrowStatus.Pending or EscrowStatus.Held))
+        {
+            await _escrows.TryAtomicStatusAsync(
+                e.EscrowTransactionId,
+                e.Status,
+                EscrowStatus.Failed,
+                now,
+                $"Voided with milestones: {reason}");
+        }
+
+        await _unitOfWork.SaveChangesAsync();
     }
 
     private async Task<Result<PaymentMilestoneScheduleDto>> TransitionAsync(
@@ -242,7 +367,8 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         Guid contractId,
         Guid transactionId,
         bool asFarm,
-        TransactionStatus to)
+        TransactionStatus to,
+        Microsoft.AspNetCore.Http.IFormFile? receipt = null)
     {
         if (asFarm && !PaymentMilestoneTransitions.IsFarmAction(to))
             return Result<PaymentMilestoneScheduleDto>.Failure(PaymentMilestoneErrors.Forbidden);
@@ -268,6 +394,30 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         if (!PaymentMilestoneTransitions.CanTransition(from, to))
             return Result<PaymentMilestoneScheduleDto>.Failure(PaymentMilestoneErrors.InvalidTransition);
 
+        string? receiptUrl = null;
+        string? receiptPublicId = null;
+        string? receiptFileName = null;
+        if (receipt is not null && to == TransactionStatus.MarkedPaid)
+        {
+            await using var probe = receipt.OpenReadStream();
+            var validation = Validation.FileUploadValidation.Validate(
+                receipt.FileName,
+                receipt.ContentType,
+                receipt.Length,
+                probe);
+            if (!validation.IsValid)
+            {
+                return Result<PaymentMilestoneScheduleDto>.Failure(new Error(
+                    validation.ErrorCode ?? "File.Invalid",
+                    validation.ErrorMessage ?? "Invalid receipt file."));
+            }
+
+            var uploaded = await _cloudinary.UploadAsync(receipt);
+            receiptUrl = uploaded.Url;
+            receiptPublicId = uploaded.PublicId;
+            receiptFileName = Path.GetFileName(receipt.FileName);
+        }
+
         await using var dbTx = await _unitOfWork.BeginTransactionAsync();
 
         var ok = await _milestones.TryAtomicTransitionAsync(
@@ -275,7 +425,10 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             from,
             to,
             DateTime.UtcNow,
-            requireNoActiveDispute: true);
+            requireNoActiveDispute: true,
+            receiptUrl,
+            receiptPublicId,
+            receiptFileName);
 
         if (!ok)
         {
@@ -292,7 +445,9 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             ToStatus = to,
             ActorUserId = userId,
             Note = to == TransactionStatus.MarkedPaid
-                ? "Factory marked milestone paid (status tracking only)"
+                ? (receiptUrl is null
+                    ? "Factory marked milestone paid (status tracking only)"
+                    : "Factory marked milestone paid with receipt (status tracking only)")
                 : "Farm confirmed payment received (status tracking only)",
             CreatedAt = DateTime.UtcNow
         });
@@ -401,24 +556,101 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         return steps;
     }
 
-    private static PaymentMilestoneScheduleDto MapSchedule(
+    private static FarmPayoutDetailsDto? MapPayout(Farm? farm)
+    {
+        if (farm is null)
+            return null;
+        if (string.IsNullOrWhiteSpace(farm.BankName)
+            && string.IsNullOrWhiteSpace(farm.AccountHolderName)
+            && string.IsNullOrWhiteSpace(farm.BankAccountNumber)
+            && string.IsNullOrWhiteSpace(farm.Iban))
+            return null;
+
+        return new FarmPayoutDetailsDto
+        {
+            BankName = farm.BankName,
+            AccountHolderName = farm.AccountHolderName,
+            AccountMasked = MaskAccount(farm.BankAccountNumber),
+            Iban = farm.Iban
+        };
+    }
+
+    private static string? MaskAccount(string? account)
+    {
+        if (string.IsNullOrWhiteSpace(account))
+            return null;
+        var digits = account.Trim();
+        if (digits.Length <= 4)
+            return new string('*', digits.Length);
+        return new string('*', Math.Min(4, digits.Length - 4)) + digits[^4..];
+    }
+
+    private string ResolveDisclaimer() =>
+        !_paymentOptions.MockGatewayEnabled
+            ? StatusTrackingDisclaimer
+            : _paymentOptions.WalletEnabled
+                ? MockEscrowPaymentService.WalletDisclaimer
+                : MockEscrowPaymentService.MockDisclaimer;
+
+    private decimal ResolveFeePercent()
+    {
+        var p = _paymentOptions.PlatformFeePercent;
+        if (p < 0) return 0;
+        return Math.Min(p, 30m);
+    }
+
+    private PaymentMilestoneScheduleDto MapSchedule(
         Guid contractId,
         decimal? contractTotal,
         string? unavailableReason,
-        IReadOnlyList<Transaction> rows) =>
-        new()
+        IReadOnlyList<Transaction> rows,
+        FarmPayoutDetailsDto? payout,
+        bool paymentsFrozen,
+        IReadOnlyList<EscrowTransaction> escrows)
+    {
+        var latestByTx = escrows
+            .GroupBy(e => e.TransactionId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.CreatedAt).First());
+
+        return new PaymentMilestoneScheduleDto
         {
             ContractId = contractId,
             ContractTotal = contractTotal,
             ContractTotalUnavailable = contractTotal is null,
             ContractTotalUnavailableReason = unavailableReason,
-            Disclaimer = StatusTrackingDisclaimer,
+            Disclaimer = ResolveDisclaimer(),
+            MockGatewayEnabled = _paymentOptions.MockGatewayEnabled,
+            WalletEnabled = _paymentOptions.WalletEnabled,
+            PlatformFeePercent = ResolveFeePercent(),
+            FarmPayoutDetails = payout,
             ScheduleGeneration = rows.Count > 0 ? rows[0].ScheduleGeneration : null,
             IsVoided = rows.Count > 0 && rows.All(r => r.Status == TransactionStatus.Voided),
-            Milestones = rows.Select(MapMilestone).ToList()
+            PaymentsFrozenByDispute = paymentsFrozen,
+            Milestones = rows.Select(t => MapMilestone(t, latestByTx.GetValueOrDefault(t.TransactionId))).ToList(),
+            Escrows = escrows.Select(e => new EscrowTransactionDto
+            {
+                EscrowTransactionId = e.EscrowTransactionId,
+                ContractId = e.ContractId,
+                TransactionId = e.TransactionId,
+                MilestoneAmountEgp = e.MilestoneAmountEgp,
+                PlatformFeePercent = e.PlatformFeePercent,
+                PlatformFeeEgp = e.PlatformFeeEgp,
+                TotalChargedEgp = e.TotalChargedEgp,
+                FarmNetEgp = e.FarmNetEgp,
+                Currency = e.Currency,
+                Status = e.Status.ToString(),
+                Gateway = e.Gateway,
+                HeldAt = e.HeldAt,
+                ReleasedAt = e.ReleasedAt,
+                RefundedAt = e.RefundedAt,
+                ReleaseReason = e.ReleaseReason,
+                RefundReason = e.RefundReason,
+                CreatedAt = e.CreatedAt
+            }).ToList()
         };
+    }
 
-    private static PaymentMilestoneDto MapMilestone(Transaction t) =>
+    private static PaymentMilestoneDto MapMilestone(Transaction t, EscrowTransaction? escrow) =>
         new()
         {
             TransactionId = t.TransactionId,
@@ -430,8 +662,25 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             Status = t.Status.ToString(),
             PaidAt = t.PaidAt,
             ReceivedAt = t.ReceivedAt,
+            DueDate = t.DueDate,
+            IsOverdue = t.DueDate is not null
+                && t.DueDate.Value.Date < DateTime.UtcNow.Date
+                && t.Status is TransactionStatus.Pending
+                    or TransactionStatus.MarkedPaid
+                    or TransactionStatus.EscrowHeld,
             VoidedAt = t.VoidedAt,
             CreatedAt = t.CreatedAt,
+            ReceiptUrl = t.ReceiptUrl,
+            ReceiptFileName = t.ReceiptFileName,
+            ReceiptUploadedAt = t.ReceiptUploadedAt,
+            ActiveEscrowTransactionId = escrow is not null
+                && escrow.Status is EscrowStatus.Created or EscrowStatus.Pending or EscrowStatus.Held
+                    ? escrow.EscrowTransactionId
+                    : escrow?.EscrowTransactionId,
+            EscrowStatus = escrow?.Status.ToString(),
+            PlatformFeeEgp = escrow?.PlatformFeeEgp,
+            TotalChargedEgp = escrow?.TotalChargedEgp,
+            FarmNetEgp = escrow?.FarmNetEgp,
             Events = (t.Events ?? Array.Empty<TransactionEvent>())
                 .OrderBy(e => e.CreatedAt)
                 .Select(e => new PaymentMilestoneEventDto
@@ -445,4 +694,28 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 })
                 .ToList()
         };
+
+    private static DateTime ResolveMilestoneDueDate(
+        string key,
+        int index,
+        int totalSteps,
+        DateTime now,
+        DateTime? deliveryDate)
+    {
+        if (key.Contains("Deposit", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("Advance", StringComparison.OrdinalIgnoreCase)
+            || index == 0)
+        {
+            return now.Date.AddDays(7);
+        }
+
+        if (deliveryDate is not null)
+            return deliveryDate.Value.Date;
+
+        if (totalSteps <= 1)
+            return now.Date.AddDays(30);
+
+        var spanDays = 7 + ((index * 23.0) / Math.Max(1, totalSteps - 1));
+        return now.Date.AddDays((int)Math.Round(spanDays));
+    }
 }

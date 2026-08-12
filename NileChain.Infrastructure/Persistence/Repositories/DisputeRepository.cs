@@ -126,6 +126,34 @@ public class DisputeRepository : IDisputeRepository
         return (items, total);
     }
 
+    public async Task<(IReadOnlyList<Dispute> Items, int TotalCount)> ListForPartyAsync(
+        Guid farmId,
+        Guid factoryId,
+        bool asFarm,
+        DisputeStatus? status,
+        int skip,
+        int take)
+    {
+        IQueryable<Dispute> q = DetailQuery().Where(d =>
+            asFarm
+                ? d.Contract.FarmMatch.FarmId == farmId
+                : d.Contract.FarmMatch.SupplyRequest.FactoryId == factoryId);
+
+        if (status.HasValue)
+            q = q.Where(d => d.Status == status.Value);
+
+        var total = await q.CountAsync();
+        var items = await q
+            .AsNoTracking()
+            .Include(d => d.Evidence)
+            .OrderByDescending(d => d.CreatedAt)
+            .Skip(skip)
+            .Take(take)
+            .ToListAsync();
+
+        return (items, total);
+    }
+
     private IQueryable<Dispute> DetailQuery() =>
         _db.Disputes
             .Include(d => d.Contract)

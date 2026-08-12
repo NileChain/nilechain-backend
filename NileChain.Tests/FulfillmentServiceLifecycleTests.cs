@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using NileChain.Application.Common;
 using NileChain.Application.Errors;
 using NileChain.Application.Services;
+using NileChain.Application.Dtos.Fulfillment;
+using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Domain.Identity;
@@ -131,21 +133,237 @@ public class FulfillmentServiceLifecycleTests
         Assert.Equal(HttpStatusCode.Conflict, ResultHttpMapper.MapStatus(result.Error));
     }
 
+    [Fact]
+    public async Task Receive_WithoutWeight_ReturnsWeighbridgeRequired()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(harness.Db);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(contractId, farmUserId);
+        await service.MarkShippedAsync(farmUserId, contractId);
+
+        var missing = await service.MarkReceivedAsync(factoryUserId, contractId, null);
+        Assert.True(missing.IsFailure);
+        Assert.Equal(FulfillmentErrors.WeighbridgeRequired.Code, missing.Error!.Code);
+        Assert.Equal(HttpStatusCode.Conflict, ResultHttpMapper.MapStatus(missing.Error));
+
+        var zero = await service.MarkReceivedAsync(
+            factoryUserId, contractId, new() { WeighedQuantityTons = 0 });
+        Assert.True(zero.IsFailure);
+        Assert.Equal(FulfillmentErrors.WeighbridgeRequired.Code, zero.Error!.Code);
+    }
+
+    [Fact]
+    public async Task Receive_Shortage_ScalesAllOpenMilestones()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(harness.Db);
+        await SeedOpenMilestonesAsync(harness.Db, contractId, 3000m, 7000m);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(contractId, farmUserId);
+        await service.MarkShippedAsync(farmUserId, contractId);
+
+        var received = await service.MarkReceivedAsync(
+            factoryUserId,
+            contractId,
+            new() { WeighedQuantityTons = 9.4m });
+        Assert.True(received.IsSuccess);
+        Assert.Equal(FulfillmentStatus.Received.ToString(), received.Value!.Status);
+        Assert.Equal(9.4m, received.Value.WeighedQuantityTons);
+
+        var rows = await harness.Db.Transactions.AsNoTracking()
+            .Where(t => t.ContractId == contractId)
+            .OrderBy(t => t.Sequence)
+            .ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2820m, rows[0].Amount); // 3000 * 0.94
+        Assert.Equal(6580m, rows[1].Amount); // 7000 * 0.94
+    }
+
+    [Fact]
+    public async Task Receive_Overage_DoesNotIncreasePayable()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(harness.Db);
+        await SeedOpenMilestonesAsync(harness.Db, contractId, 3000m, 7000m);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(contractId, farmUserId);
+        await service.MarkShippedAsync(farmUserId, contractId);
+
+        var received = await service.MarkReceivedAsync(
+            factoryUserId, contractId, new() { WeighedQuantityTons = 12m });
+        Assert.True(received.IsSuccess);
+
+        var rows = await harness.Db.Transactions.AsNoTracking()
+            .Where(t => t.ContractId == contractId)
+            .OrderBy(t => t.Sequence)
+            .ToListAsync();
+        Assert.Equal(3000m, rows[0].Amount);
+        Assert.Equal(7000m, rows[1].Amount);
+    }
+
+    [Fact]
+    public async Task RejectAtGate_FactoryGate_ReturnFreightIsFarm()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(
+            harness.Db, DeliveryPoint.FactoryGate);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(
+            contractId, farmUserId, null, DeliveryPoint.FactoryGate, DealParty.Farm, DealParty.Farm);
+        await service.MarkShippedAsync(farmUserId, contractId);
+
+        var rejected = await service.MarkRejectedAtGateAsync(
+            factoryUserId, contractId, new() { Reason = "QualityFail" });
+        Assert.True(rejected.IsSuccess);
+        Assert.Equal(FulfillmentStatus.RejectedAtGate.ToString(), rejected.Value!.Status);
+        Assert.Equal(DealParty.Farm.ToString(), rejected.Value.ReturnFreightBearer);
+
+        var farmAttempt = await service.MarkRejectedAtGateAsync(
+            farmUserId, contractId, new() { Reason = "QualityFail" });
+        Assert.True(farmAttempt.IsFailure);
+        Assert.Equal(FactoryErrors.FactoryNotFound.Code, farmAttempt.Error!.Code);
+    }
+
+    [Fact]
+    public async Task RejectAtGate_FarmGate_ReturnFreightIsFactory()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(
+            harness.Db, DeliveryPoint.FarmGate);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(
+            contractId, farmUserId, null, DeliveryPoint.FarmGate, DealParty.Factory, DealParty.Factory);
+        await service.MarkShippedAsync(farmUserId, contractId);
+
+        var rejected = await service.MarkRejectedAtGateAsync(
+            factoryUserId, contractId, new() { Reason = "WrongCrop" });
+        Assert.True(rejected.IsSuccess);
+        Assert.Equal(DealParty.Factory.ToString(), rejected.Value!.ReturnFreightBearer);
+    }
+
+    [Fact]
+    public async Task RejectAtGate_AfterReceived_InvalidTransition()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(harness.Db);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(contractId, farmUserId);
+        await service.MarkShippedAsync(farmUserId, contractId);
+        await service.MarkReceivedAsync(
+            factoryUserId, contractId, new() { WeighedQuantityTons = 10m });
+
+        var rejected = await service.MarkRejectedAtGateAsync(
+            factoryUserId, contractId, new() { Reason = "QualityFail" });
+        Assert.True(rejected.IsFailure);
+        Assert.Equal(FulfillmentErrors.InvalidTransition.Code, rejected.Error!.Code);
+    }
+
+    [Fact]
+    public async Task QualityCheck_AfterWeighShortage_DoesNotDoubleCountWeight()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(harness.Db);
+        await SeedOpenMilestonesAsync(harness.Db, contractId, 3000m, 7000m);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(contractId, farmUserId);
+        await service.MarkShippedAsync(farmUserId, contractId);
+        await service.MarkReceivedAsync(
+            factoryUserId, contractId, new() { WeighedQuantityTons = 9.4m });
+
+        var qc = await service.MarkQualityCheckedAsync(
+            factoryUserId,
+            contractId,
+            new() { AcceptedQuantityTons = 9.4m, DiscountPercent = 0 });
+        Assert.True(qc.IsSuccess);
+
+        var rows = await harness.Db.Transactions.AsNoTracking()
+            .Where(t => t.ContractId == contractId)
+            .OrderBy(t => t.Sequence)
+            .ToListAsync();
+        Assert.Equal(2820m, rows[0].Amount);
+        Assert.Equal(6580m, rows[1].Amount);
+    }
+
+    [Fact]
+    public async Task QualityCheck_AcceptedExceedsWeighed_Conflict()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var (contractId, farmUserId, factoryUserId) = await SeedSignedContractAsync(harness.Db);
+        var service = CreateService(harness.Db);
+        await service.EnsureCreatedForSignedContractAsync(contractId, farmUserId);
+        await service.MarkShippedAsync(farmUserId, contractId);
+        await service.MarkReceivedAsync(
+            factoryUserId, contractId, new() { WeighedQuantityTons = 8m });
+
+        var qc = await service.MarkQualityCheckedAsync(
+            factoryUserId,
+            contractId,
+            new() { AcceptedQuantityTons = 9m });
+        Assert.True(qc.IsFailure);
+        Assert.Equal(FulfillmentErrors.AcceptedExceedsWeighed.Code, qc.Error!.Code);
+        Assert.Equal(HttpStatusCode.Conflict, ResultHttpMapper.MapStatus(qc.Error));
+    }
+
+    [Fact]
+    public void EligibilityChanged_MapsToHttpConflict()
+    {
+        Assert.Equal(
+            HttpStatusCode.Conflict,
+            ResultHttpMapper.MapStatus(FactoryErrors.EligibilityChanged));
+    }
+
     private static FulfillmentService CreateService(
         NileChainDbContext db,
         IFulfillmentRepository? fulfillments = null) =>
         new(
             fulfillments ?? new FulfillmentRepository(db),
             new DisputeRepository(db),
+            new PaymentMilestoneRepository(db),
             new FarmRepository(db),
             new FactoryRepository(db),
             new Repository<Contract>(db),
             new Repository<Notification>(db),
             new Repository<SupplyRequest>(db),
+            new NileChain.Tests.TestDoubles.NoopEscrowPayments(),
             new UnitOfWork(db));
 
+    private static async Task SeedOpenMilestonesAsync(
+        NileChainDbContext db, Guid contractId, decimal deposit, decimal onDelivery)
+    {
+        db.Transactions.AddRange(
+            new Transaction
+            {
+                TransactionId = Guid.NewGuid(),
+                ContractId = contractId,
+                ScheduleGeneration = 1,
+                Sequence = 1,
+                Label = "Deposit",
+                PaymentMethod = "Deposit",
+                Percent = 30,
+                Amount = deposit,
+                Status = TransactionStatus.Pending,
+                CreatedAt = DateTime.UtcNow
+            },
+            new Transaction
+            {
+                TransactionId = Guid.NewGuid(),
+                ContractId = contractId,
+                ScheduleGeneration = 1,
+                Sequence = 2,
+                Label = "On delivery",
+                PaymentMethod = "OnDelivery",
+                Percent = 70,
+                Amount = onDelivery,
+                Status = TransactionStatus.Pending,
+                CreatedAt = DateTime.UtcNow
+            });
+        await db.SaveChangesAsync();
+    }
+
     private static async Task<(Guid ContractId, Guid FarmUserId, Guid FactoryUserId)> SeedSignedContractAsync(
-        NileChainDbContext db)
+        NileChainDbContext db,
+        DeliveryPoint deliveryPoint = DeliveryPoint.FactoryGate)
     {
         var farmUserId = Guid.NewGuid();
         var factoryUserId = Guid.NewGuid();
@@ -204,6 +422,9 @@ public class FulfillmentServiceLifecycleTests
             QuantityTons = 10,
             PricePerTon = 1000,
             DeliveryDate = DateTime.UtcNow.Date.AddDays(10),
+            DeliveryPoint = deliveryPoint,
+            FreightPayer = DeliveryTermsPolicy.DefaultFreight(deliveryPoint),
+            TransitRisk = DeliveryTermsPolicy.DefaultTransit(deliveryPoint),
             Status = SupplyRequestStatus.Matched,
             CreatedAt = DateTime.UtcNow
         });
@@ -265,7 +486,19 @@ public class FulfillmentServiceLifecycleTests
             FulfillmentStatus to,
             DateTime utcNow,
             string? qualityNotes = null,
-            bool requireNoActiveDispute = false) =>
+            bool requireNoActiveDispute = false,
+            string? carrier = null,
+            string? trackingNumber = null,
+            string? shippedNotes = null,
+            decimal? acceptedQuantityTons = null,
+            decimal? discountPercent = null,
+            bool? specsMet = null,
+            string? specsOutcomeNotes = null,
+            decimal? weighedQuantityTons = null,
+            string? weighbridgeTicketUrl = null,
+            GateRejectReason? gateRejectReason = null,
+            string? gateRejectNotes = null,
+            DealParty? returnFreightBearer = null) =>
             Task.FromResult(false);
 
         public Task<IReadOnlyList<Fulfillment>> GetStuckPlannedAsync(DateTime asOfUtcNoon, int skip, int take) =>

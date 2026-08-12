@@ -26,9 +26,18 @@ public static class DependencyInjection
         services.AddScoped<ICropRequestService, CropRequestService>();
         services.AddScoped<IFulfillmentService, FulfillmentService>();
         services.AddScoped<IPaymentMilestoneService, PaymentMilestoneService>();
+        services.AddScoped<IMockEscrowPaymentService, MockEscrowPaymentService>();
+        services.AddScoped<IWalletService, WalletService>();
         services.AddScoped<IDisputeService, DisputeService>();
+        services.AddScoped<IContractIntegrityService, ContractIntegrityService>();
         services.Configure<Options.PaymentMilestoneOptions>(
             configuration.GetSection(Options.PaymentMilestoneOptions.SectionName));
+        services.Configure<Options.DeliveryTermsOptions>(
+            configuration.GetSection(Options.DeliveryTermsOptions.SectionName));
+        services.Configure<Options.MockPaymentOptions>(
+            configuration.GetSection(Options.MockPaymentOptions.SectionName));
+        services.Configure<Options.PaymobOptions>(
+            configuration.GetSection(Options.PaymobOptions.SectionName));
 
         return services;
     }

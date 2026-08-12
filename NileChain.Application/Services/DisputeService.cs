@@ -20,6 +20,7 @@ public sealed class DisputeService : IDisputeService
     private readonly IFactoryRepository _factories;
     private readonly IRepository<Notification> _notifications;
     private readonly ICloudinaryService _cloudinary;
+    private readonly IMockEscrowPaymentService _escrowPayments;
     private readonly IUnitOfWork _unitOfWork;
 
     public DisputeService(
@@ -28,6 +29,7 @@ public sealed class DisputeService : IDisputeService
         IFactoryRepository factories,
         IRepository<Notification> notifications,
         ICloudinaryService cloudinary,
+        IMockEscrowPaymentService escrowPayments,
         IUnitOfWork unitOfWork)
     {
         _disputes = disputes;
@@ -35,6 +37,7 @@ public sealed class DisputeService : IDisputeService
         _factories = factories;
         _notifications = notifications;
         _cloudinary = cloudinary;
+        _escrowPayments = escrowPayments;
         _unitOfWork = unitOfWork;
     }
 
@@ -217,6 +220,58 @@ public sealed class DisputeService : IDisputeService
         });
     }
 
+    public async Task<Result<DisputeListDto>> ListMineAsync(
+        Guid userId,
+        bool asFarm,
+        string? status,
+        int page,
+        int pageSize)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        DisputeStatus? statusFilter = null;
+        if (!string.IsNullOrWhiteSpace(status))
+        {
+            if (!Enum.TryParse(status, ignoreCase: true, out DisputeStatus parsedStatus))
+                return Result<DisputeListDto>.Failure(DisputeErrors.InvalidTransition);
+            statusFilter = parsedStatus;
+        }
+
+        Guid farmId = Guid.Empty;
+        Guid factoryId = Guid.Empty;
+        if (asFarm)
+        {
+            var farm = await _farms.GetByUserIdAsync(userId);
+            if (farm is null)
+                return Result<DisputeListDto>.Failure(FarmErrors.FarmNotFound);
+            farmId = farm.FarmId;
+        }
+        else
+        {
+            var factory = await _factories.GetByUserIdAsync(userId);
+            if (factory is null)
+                return Result<DisputeListDto>.Failure(FactoryErrors.FactoryNotFound);
+            factoryId = factory.FactoryId;
+        }
+
+        var (items, total) = await _disputes.ListForPartyAsync(
+            farmId,
+            factoryId,
+            asFarm,
+            statusFilter,
+            (page - 1) * pageSize,
+            pageSize);
+
+        return Result<DisputeListDto>.Success(new DisputeListDto
+        {
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = total,
+            Items = items.Select(Map).ToList()
+        });
+    }
+
     public async Task<Result<DisputeDto>> GetAdminAsync(Guid disputeId)
     {
         var dispute = await _disputes.GetByIdAsync(disputeId);
@@ -247,7 +302,10 @@ public sealed class DisputeService : IDisputeService
             return Task.FromResult(Result<DisputeDto>.Failure(DisputeErrors.AdminNoteRequired));
 
         if (!Enum.TryParse<DisputeOutcomeFavor>(outcomeFavor, ignoreCase: true, out var favor)
-            || favor is not (DisputeOutcomeFavor.Farm or DisputeOutcomeFavor.Factory))
+            || favor is not (
+                DisputeOutcomeFavor.Farm
+                or DisputeOutcomeFavor.Factory
+                or DisputeOutcomeFavor.Split))
         {
             return Task.FromResult(Result<DisputeDto>.Failure(DisputeErrors.OutcomeFavorRequired));
         }
@@ -302,6 +360,17 @@ public sealed class DisputeService : IDisputeService
 
         if (!ok)
             return Result<DisputeDto>.Failure(DisputeErrors.Conflict);
+
+        if (to == DisputeStatus.Resolved)
+        {
+            var settle = await _escrowPayments.SettleDisputeOutcomeAsync(
+                dispute.ContractId,
+                adminUserId,
+                outcomeFavor.ToString(),
+                adminNote ?? $"Resolved in favor of {outcomeFavor}");
+            if (settle.IsFailure)
+                return Result<DisputeDto>.Failure(settle.Error!);
+        }
 
         var note = BuildEventNote(to, outcomeFavor, adminNote);
         await _disputes.AddEventAsync(new DisputeEvent

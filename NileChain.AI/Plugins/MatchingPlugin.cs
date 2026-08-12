@@ -80,7 +80,9 @@ public class MatchingPlugin
 
         var scope = GeographicMatching.ResolveEffectiveScope(persistedScope, geographicOverride);
 
-        // TODO: Farm has no capacity/available-quantity field — QuantityTons cannot be used for filtering yet.
+        var neededTons = supplyRequest.QuantityTons;
+        var deliveryDate = supplyRequest.DeliveryDate?.Date;
+        var offeredPrice = supplyRequest.PricePerTon;
 
         // Exclude farms whose linked user is inactive (Users.IsActive == false).
         var inactiveUserIds = await _context.Users
@@ -89,10 +91,30 @@ public class MatchingPlugin
             .Select(u => u.Id)
             .ToListAsync();
 
+        // Capacity / season / floor price: null commercial fields stay eligible (unknown).
+        // Factory-excluded farms for this request never re-enter the shortlist.
+        var excludedFarmIds = await _context.FarmMatches
+            .AsNoTracking()
+            .Where(m => m.RequestId == requestId && m.IsExcludedByFactory)
+            .Select(m => m.FarmId)
+            .ToListAsync();
+
         var candidates = await _context.Farm
             .AsNoTracking()
-            .Where(f => f.CropTypes.Any(c => c.CropTypeId == cropTypeId))
+            .Where(f => f.FarmCrops.Any(fc =>
+                fc.CropTypeId == cropTypeId
+                && (fc.AvailableQuantityTons == null || fc.AvailableQuantityTons >= neededTons)
+                && (deliveryDate == null
+                    || fc.AvailableFrom == null
+                    || fc.AvailableFrom <= deliveryDate)
+                && (deliveryDate == null
+                    || fc.AvailableTo == null
+                    || fc.AvailableTo >= deliveryDate)
+                && (offeredPrice == null
+                    || fc.MinPricePerTon == null
+                    || fc.MinPricePerTon <= offeredPrice)))
             .Where(f => !inactiveUserIds.Contains(f.UserId))
+            .Where(f => !excludedFarmIds.Contains(f.FarmId))
             .Select(f => new FarmCandidate(
                 f.FarmId,
                 f.Name,
@@ -101,7 +123,7 @@ public class MatchingPlugin
                 f.IsVerified,
                 f.Latitude,
                 f.Longitude,
-                f.CropTypes.Select(c => c.Name).ToList()))
+                f.FarmCrops.Select(c => c.CropType.Name).ToList()))
             .ToListAsync();
 
         var beforeGeo = candidates.Count;

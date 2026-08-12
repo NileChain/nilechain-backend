@@ -21,7 +21,11 @@ public class FarmContractDto
     public bool FarmSigned { get; set; }
     public DateTime? FactorySignedAt { get; set; }
     public DateTime? FarmSignedAt { get; set; }
+    public Guid? FarmUserId { get; set; }
+    public Guid? FactoryUserId { get; set; }
+    public bool CanUnwindSigned { get; set; }
     public DateTime UpdatedAt { get; set; }
     public decimal? MatchScore { get; set; }
     public decimal? RiskScore { get; set; }
+    public NileChain.Application.Dtos.Integrity.ContractIntegrityDto? Integrity { get; set; }
 }

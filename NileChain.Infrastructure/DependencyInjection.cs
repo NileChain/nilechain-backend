@@ -107,6 +107,7 @@ public static class DependencyInjection
         services.Configure<CloudinaryOptions>(
                 configuration.GetSection(CloudinaryOptions.SectionName));
         services.AddScoped<ICloudinaryService, CloudinaryService>();
+        services.AddScoped<IContractAttachmentService, ContractAttachmentService>();
 
         services.Configure<EmailOptions>(
                 configuration.GetSection(EmailOptions.SectionName));
@@ -117,12 +118,17 @@ public static class DependencyInjection
         services.AddScoped<IFactoryRepository, FactoryRepository>();
         services.AddScoped<IFulfillmentRepository, FulfillmentRepository>();
         services.AddScoped<IPaymentMilestoneRepository, PaymentMilestoneRepository>();
+        services.AddScoped<IEscrowTransactionRepository, EscrowTransactionRepository>();
+        services.AddScoped<IWalletRepository, WalletRepository>();
         services.AddScoped<IDisputeRepository, DisputeRepository>();
+        services.AddScoped<IContractIntegrityRepository, ContractIntegrityRepository>();
         services.AddScoped<IAdminAnalyticsRepository, AdminAnalyticsRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.AddScoped<ITemplateRenderer, TemplateRendererService>();
         services.AddScoped<ITokenService, JwtTokenService>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        services.AddHttpClient<IPaymobClient, NileChain.Infrastructure.Paymob.PaymobClient>();
 
         return services;
     }

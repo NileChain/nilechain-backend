@@ -21,7 +21,19 @@ public interface IFulfillmentRepository
         FulfillmentStatus to,
         DateTime utcNow,
         string? qualityNotes = null,
-        bool requireNoActiveDispute = false);
+        bool requireNoActiveDispute = false,
+        string? carrier = null,
+        string? trackingNumber = null,
+        string? shippedNotes = null,
+        decimal? acceptedQuantityTons = null,
+        decimal? discountPercent = null,
+        bool? specsMet = null,
+        string? specsOutcomeNotes = null,
+        decimal? weighedQuantityTons = null,
+        string? weighbridgeTicketUrl = null,
+        GateRejectReason? gateRejectReason = null,
+        string? gateRejectNotes = null,
+        DealParty? returnFreightBearer = null);
 
     Task<IReadOnlyList<Fulfillment>> GetStuckPlannedAsync(DateTime asOfUtcNoon, int skip, int take);
     Task<int> CountStuckPlannedAsync(DateTime asOfUtcNoon);

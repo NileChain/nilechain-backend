@@ -22,13 +22,16 @@ public static class PaymentMilestoneTransitions
         (from, to) switch
         {
             (TransactionStatus.Pending, TransactionStatus.MarkedPaid) => true,
+            (TransactionStatus.Pending, TransactionStatus.EscrowHeld) => true,
             (TransactionStatus.MarkedPaid, TransactionStatus.Completed) => true,
+            (TransactionStatus.EscrowHeld, TransactionStatus.Completed) => true,
+            (TransactionStatus.EscrowHeld, TransactionStatus.Refunded) => true,
             (_, TransactionStatus.Voided) when CanVoid(from) => true,
             _ => false
         };
 
     public static bool IsFactoryAction(TransactionStatus to) =>
-        to == TransactionStatus.MarkedPaid;
+        to is TransactionStatus.MarkedPaid or TransactionStatus.EscrowHeld;
 
     public static bool IsFarmAction(TransactionStatus to) =>
         to == TransactionStatus.Completed;

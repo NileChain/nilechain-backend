@@ -92,6 +92,17 @@ public class ReviewService : IReviewService
         return Result<ReviewDto>.Success(Map(review));
     }
 
+    public async Task<Result<List<ReviewDto>>> GetReviewsForContractAsync(Guid contractId)
+    {
+        var reviews = (await _reviewRepository.GetAllAsync())
+            .Where(r => r.ContractId == contractId)
+            .OrderByDescending(r => r.CreatedAt)
+            .Select(Map)
+            .ToList();
+
+        return Result<List<ReviewDto>>.Success(reviews);
+    }
+
     public async Task<Result<List<ReviewDto>>> GetReviewsForTargetAsync(Guid targetId)
     {
         var reviews = (await _reviewRepository.GetAllAsync())

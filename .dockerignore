@@ -1,0 +1,14 @@
+**/.git
+**/.vs
+**/.idea
+**/bin
+**/obj
+**/TestResults
+**/.env
+**/.env.*
+!**/.env.example
+**/appsettings.*.local.json
+NileChain.Tests
+*.md
+chroma-proxy
+.git

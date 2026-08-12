@@ -16,18 +16,24 @@ public class FactoryController : ControllerBase
     private readonly IFactoryService _factoryService;
     private readonly IFulfillmentService _fulfillmentService;
     private readonly IPaymentMilestoneService _paymentMilestoneService;
+    private readonly IMockEscrowPaymentService _mockEscrowPaymentService;
     private readonly IDisputeService _disputeService;
+    private readonly IContractAttachmentService _attachmentService;
 
     public FactoryController(
         IFactoryService factoryService,
         IFulfillmentService fulfillmentService,
         IPaymentMilestoneService paymentMilestoneService,
-        IDisputeService disputeService)
+        IMockEscrowPaymentService mockEscrowPaymentService,
+        IDisputeService disputeService,
+        IContractAttachmentService attachmentService)
     {
         _factoryService = factoryService;
         _fulfillmentService = fulfillmentService;
         _paymentMilestoneService = paymentMilestoneService;
+        _mockEscrowPaymentService = mockEscrowPaymentService;
         _disputeService = disputeService;
+        _attachmentService = attachmentService;
     }
 
     [HttpGet("profile")]
@@ -52,6 +58,17 @@ public class FactoryController : ControllerBase
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
+    [HttpGet("dashboard")]
+    public async Task<IActionResult> GetDashboard()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetDashboardAsync(Guid.Parse(userId));
+        return result.ToActionResult();
+    }
+
     [HttpPost("requests")]
     public async Task<IActionResult> CreateRequest([FromBody] CreateSupplyRequestRequest request)
     {
@@ -70,13 +87,62 @@ public class FactoryController : ControllerBase
     [HttpGet("requests")]
     public async Task<IActionResult> GetRequests(
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 10)
+        [FromQuery] int pageSize = 10,
+        [FromQuery] string? status = null)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
-        var result = await _factoryService.GetRequestsAsync(Guid.Parse(userId), page, pageSize);
+        var result = await _factoryService.GetRequestsAsync(
+            Guid.Parse(userId), page, pageSize, status);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("requests/{requestId:guid}")]
+    public async Task<IActionResult> GetRequest(Guid requestId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetRequestAsync(Guid.Parse(userId), requestId);
+        return result.ToActionResult();
+    }
+
+    [HttpPut("requests/{requestId:guid}/delivery-terms")]
+    public async Task<IActionResult> UpdateRequestDeliveryTerms(
+        Guid requestId,
+        [FromBody] UpdateSupplyRequestDeliveryTermsRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.UpdateRequestDeliveryTermsAsync(
+            Guid.Parse(userId), requestId, request);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("requests/{requestId:guid}/cancel")]
+    public async Task<IActionResult> CancelRequest(Guid requestId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.CancelRequestAsync(Guid.Parse(userId), requestId);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
+    }
+
+    [HttpGet("suppliers/{farmId:guid}/scorecard")]
+    public async Task<IActionResult> GetSupplierScorecard(Guid farmId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetSupplierScorecardAsync(Guid.Parse(userId), farmId);
         return result.ToActionResult();
     }
 
@@ -102,6 +168,37 @@ public class FactoryController : ControllerBase
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
+    [HttpPost("matches/{matchId:guid}/accept-counter")]
+    public async Task<IActionResult> AcceptCounter(Guid matchId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.AcceptCounterOfferAsync(Guid.Parse(userId), matchId);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
+    }
+
+    [HttpPost("matches/{matchId:guid}/reject-counter")]
+    public async Task<IActionResult> RejectCounter(Guid matchId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.RejectCounterOfferAsync(Guid.Parse(userId), matchId);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
+    }
+
+    [HttpGet("listings")]
+    public async Task<IActionResult> GetListings(
+        [FromQuery] Guid? cropTypeId,
+        [FromQuery] string? governorate)
+    {
+        var result = await _factoryService.GetPublishedListingsAsync(cropTypeId, governorate);
+        return result.ToActionResult();
+    }
+
     [HttpGet("matched-farms")]
     public async Task<IActionResult> GetMatchedFarms()
     {
@@ -110,6 +207,17 @@ public class FactoryController : ControllerBase
             return Unauthorized();
 
         var result = await _factoryService.GetMatchedFarmsAsync(Guid.Parse(userId));
+        return result.ToActionResult();
+    }
+
+    [HttpGet("farms/{farmId:guid}/active-match")]
+    public async Task<IActionResult> GetActiveMatchWithFarm(Guid farmId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetActiveMatchWithFarmAsync(Guid.Parse(userId), farmId);
         return result.ToActionResult();
     }
 
@@ -214,13 +322,30 @@ public class FactoryController : ControllerBase
     }
 
     [HttpPost("contracts/{contractId:guid}/fulfillment/receive")]
-    public async Task<IActionResult> MarkReceived(Guid contractId)
+    public async Task<IActionResult> MarkReceived(
+        Guid contractId,
+        [FromBody] NileChain.Application.Dtos.Fulfillment.ReceiveFulfillmentRequest? request)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
-        var result = await _fulfillmentService.MarkReceivedAsync(Guid.Parse(userId), contractId);
+        var result = await _fulfillmentService.MarkReceivedAsync(
+            Guid.Parse(userId), contractId, request);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/fulfillment/reject-at-gate")]
+    public async Task<IActionResult> RejectAtGate(
+        Guid contractId,
+        [FromBody] NileChain.Application.Dtos.Fulfillment.RejectAtGateRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _fulfillmentService.MarkRejectedAtGateAsync(
+            Guid.Parse(userId), contractId, request);
         return result.ToActionResult();
     }
 
@@ -234,7 +359,7 @@ public class FactoryController : ControllerBase
             return Unauthorized();
 
         var result = await _fulfillmentService.MarkQualityCheckedAsync(
-            Guid.Parse(userId), contractId, request?.Notes);
+            Guid.Parse(userId), contractId, request);
         return result.ToActionResult();
     }
 
@@ -262,14 +387,71 @@ public class FactoryController : ControllerBase
     }
 
     [HttpPost("contracts/{contractId:guid}/payment-milestones/{transactionId:guid}/mark-paid")]
-    public async Task<IActionResult> MarkPaymentMilestonePaid(Guid contractId, Guid transactionId)
+    [RequestSizeLimit(NileChain.Application.Validation.FileUploadValidation.MaxBytes)]
+    public async Task<IActionResult> MarkPaymentMilestonePaid(
+        Guid contractId,
+        Guid transactionId,
+        IFormFile? receipt)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
         var result = await _paymentMilestoneService.MarkPaidAsync(
-            Guid.Parse(userId), contractId, transactionId);
+            Guid.Parse(userId), contractId, transactionId, receipt);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/payments/mock/session")]
+    public async Task<IActionResult> CreateMockPaymentSession(
+        Guid contractId,
+        [FromBody] NileChain.Application.Dtos.Payment.CreateMockEscrowSessionRequest body)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _mockEscrowPaymentService.CreateSessionAsync(
+            Guid.Parse(userId),
+            contractId,
+            body.TransactionId,
+            body.IdempotencyKey);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/payments/mock/{escrowId:guid}/confirm-paid")]
+    public async Task<IActionResult> ConfirmMockPayment(Guid contractId, Guid escrowId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _mockEscrowPaymentService.ConfirmPaidAsync(
+            Guid.Parse(userId), contractId, escrowId);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/escrow/{escrowId:guid}/confirm-release")]
+    public async Task<IActionResult> ConfirmEscrowRelease(Guid contractId, Guid escrowId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _mockEscrowPaymentService.ConfirmReleaseAsync(
+            Guid.Parse(userId), contractId, escrowId);
+        return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}/escrow")]
+    public async Task<IActionResult> ListEscrow(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _mockEscrowPaymentService.ListForContractAsync(
+            Guid.Parse(userId), contractId, asFarm: false);
         return result.ToActionResult();
     }
 
@@ -307,6 +489,21 @@ public class FactoryController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpGet("disputes")]
+    public async Task<IActionResult> ListMyDisputes(
+        [FromQuery] string? status,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _disputeService.ListMineAsync(
+            Guid.Parse(userId), asFarm: false, status, page, pageSize);
+        return result.ToActionResult();
+    }
+
     [HttpGet("disputes/{disputeId:guid}")]
     public async Task<IActionResult> GetDispute(Guid disputeId)
     {
@@ -327,6 +524,50 @@ public class FactoryController : ControllerBase
 
         var result = await _factoryService.ApproveContractAsync(Guid.Parse(userId), contractId);
         return result.ToActionResult();
+    }
+
+    [HttpGet("contracts/{contractId:guid}/attachments")]
+    public async Task<IActionResult> ListAttachments(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _attachmentService.ListAsync(Guid.Parse(userId), contractId, isFactory: true);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/attachments")]
+    [RequestSizeLimit(10 * 1024 * 1024)]
+    public async Task<IActionResult> UploadAttachment(
+        Guid contractId,
+        IFormFile file,
+        [FromForm] string? kind)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var parsed = Enum.TryParse<NileChain.Domain.Enums.ContractAttachmentKind>(
+            kind, ignoreCase: true, out var k)
+            ? k
+            : NileChain.Domain.Enums.ContractAttachmentKind.Other;
+
+        var result = await _attachmentService.UploadAsync(
+            Guid.Parse(userId), contractId, isFactory: true, file, parsed);
+        return result.ToActionResult();
+    }
+
+    [HttpDelete("contracts/{contractId:guid}/attachments/{attachmentId:guid}")]
+    public async Task<IActionResult> DeleteAttachment(Guid contractId, Guid attachmentId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _attachmentService.DeleteAsync(
+            Guid.Parse(userId), contractId, attachmentId, isFactory: true);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
     [HttpPut("contracts/{contractId:guid}/reject")]

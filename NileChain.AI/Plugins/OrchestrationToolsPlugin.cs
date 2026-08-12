@@ -507,7 +507,13 @@ public sealed class OrchestrationToolsPlugin
                     PricePerTon = match.SupplyRequest?.PricePerTon ?? _state.Request.PricePerTon,
                     DeliveryDate = match.SupplyRequest?.DeliveryDate ?? _state.Request.DeliveryDate,
                     FactoryGovernorate = match.SupplyRequest?.Factory?.Governorate
-                        ?? _state.Request.FactoryGovernorate
+                        ?? _state.Request.FactoryGovernorate,
+                    DeliveryPoint = match.SupplyRequest?.DeliveryPoint.ToString()
+                        ?? _state.Request.DeliveryPoint,
+                    FreightPayer = match.SupplyRequest?.FreightPayer.ToString()
+                        ?? _state.Request.FreightPayer,
+                    TransitRisk = match.SupplyRequest?.TransitRisk.ToString()
+                        ?? _state.Request.TransitRisk
                 };
 
                 factoryName = match.SupplyRequest?.Factory?.Name

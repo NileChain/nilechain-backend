@@ -7,4 +7,5 @@ public interface IReviewService
 {
     Task<Result<ReviewDto>> CreateReviewAsync(Guid reviewerId, CreateReviewRequest request);
     Task<Result<List<ReviewDto>>> GetReviewsForTargetAsync(Guid targetId);
+    Task<Result<List<ReviewDto>>> GetReviewsForContractAsync(Guid contractId);
 }

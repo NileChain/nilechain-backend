@@ -29,6 +29,7 @@ public sealed class OrchestrationRunState
     public List<MatchResult> RankedCandidates { get; set; } = new();
     public int LastTotalEligible { get; set; }
     public int LastTruncatedCount { get; set; }
+    public int LastSupersededCount { get; set; }
 
     /// <summary>Cached from persisted SupplyRequest.QualitySpecs (authoritative).</summary>
     public GeographicMatching.Scope? PersistedGeoScope { get; set; }

@@ -212,7 +212,7 @@ public static partial class DevelopmentDataSeeder
         return await db.Farm
             .AsNoTracking()
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
             .Include(f => f.FarmCertifications)
             .Where(f => f.User.Email != null && emails.Contains(f.User.Email))
             .OrderBy(f => f.User.Email)

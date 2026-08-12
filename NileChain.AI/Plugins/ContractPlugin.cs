@@ -15,7 +15,10 @@ public class ContractPlugin
         [Description("Price per ton in EGP")] decimal pricePerTon,
         [Description("Delivery date")] string deliveryDate,
         [Description("Quality specifications")] string qualitySpecs,
-        [Description("RAG context from knowledge base")] string ragContext)
+        [Description("RAG context from knowledge base")] string ragContext,
+        [Description("Delivery point Arabic label")] string deliveryPointArabic = "باب المصنع",
+        [Description("Who pays freight Arabic")] string freightPayerArabic = "المزرعة",
+        [Description("Who bears transit risk Arabic")] string transitRiskArabic = "المزرعة")
     {
         var totalValue = quantityTons * pricePerTon;
 
@@ -31,6 +34,9 @@ public class ContractPlugin
             - السعر: {pricePerTon} جنيه/طن
             - الإجمالي: {totalValue} جنيه مصري
             - تاريخ التسليم: {deliveryDate}
+            - نقطة التسليم: {deliveryPointArabic}
+            - أجرة النقل يتحملها: {freightPayerArabic}
+            - مخاطر التلف أثناء النقل يتحملها: {transitRiskArabic}
             - مواصفات الجودة: {qualitySpecs}
 
             معايير الجودة المرجعية من قاعدة المعرفة:
@@ -41,7 +47,7 @@ public class ContractPlugin
             2. موضوع العقد
             3. الكمية والمواصفات
             4. السعر وشروط الدفع (30% مقدم، 70% عند الاستلام)
-            5. شروط التسليم
+            5. شروط التسليم — يجب أن تذكر حرفياً نقطة التسليم ({deliveryPointArabic}) ومن يتحمل أجرة النقل ({freightPayerArabic}) ومن يتحمل مخاطر الطريق ({transitRiskArabic}). رفض الحمولة عند بوابة المصنع قبل الاستلام يعيد العربات حسب من يملك النقل، ويعيد أي مبلغ محجوز للمشتري.
             6. جزاءات الإخلال
             7. فض النزاعات (محاكم القاهرة الاقتصادية)
             8. خانات التوقيع

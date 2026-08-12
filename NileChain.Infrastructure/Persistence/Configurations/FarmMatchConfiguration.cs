@@ -14,6 +14,12 @@ public class FarmMatchConfiguration : IEntityTypeConfiguration<FarmMatch>
         builder.Property(m => m.MatchScore).HasPrecision(5, 2);
         builder.Property(m => m.RiskScore).HasPrecision(5, 2);
         builder.Property(m => m.MatchedGovernorate).HasMaxLength(100);
+        builder.Property(m => m.EligibilitySnapshotJson);
+        builder.Property(m => m.CounterQuantityTons).HasPrecision(10, 2);
+        builder.Property(m => m.CounterPricePerTon).HasPrecision(12, 2);
+        builder.Property(m => m.CounterNote).HasMaxLength(1000);
+        builder.HasIndex(m => new { m.RequestId, m.IsExcludedByFactory })
+            .HasDatabaseName("IX_FarmMatch_RequestId_Excluded");
 
         builder.Property(m => m.Status)
             .HasConversion<string>()

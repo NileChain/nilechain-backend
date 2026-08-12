@@ -225,8 +225,19 @@ public static partial class DevelopmentDataSeeder
                     var cropName = CropNames[(i + c) % CropNames.Length];
                     var crop = cropTypes.First(ct =>
                         ct.Name.Equals(cropName, StringComparison.OrdinalIgnoreCase));
-                    if (farm.CropTypes.All(x => x.CropTypeId != crop.CropTypeId))
-                        farm.CropTypes.Add(crop);
+                    if (farm.FarmCrops.Any(x => x.CropTypeId == crop.CropTypeId))
+                        continue;
+
+                    farm.FarmCrops.Add(new FarmCrop
+                    {
+                        FarmId = farm.FarmId,
+                        CropTypeId = crop.CropTypeId,
+                        AvailableQuantityTons = 20m + (i % 10) * 5m,
+                        AvailableFrom = DateTime.UtcNow.Date.AddMonths(-1),
+                        AvailableTo = DateTime.UtcNow.Date.AddMonths(8),
+                        MinPricePerTon = 7000m + (i % 5) * 500m,
+                        CropType = crop
+                    });
                 }
             }
 
@@ -272,7 +283,7 @@ public static partial class DevelopmentDataSeeder
         var emails = AllSeedFarmEmails().ToHashSet(StringComparer.OrdinalIgnoreCase);
         return await db.Farm
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
             .Include(f => f.FarmCertifications)
             .Where(f => f.User.Email != null && emails.Contains(f.User.Email))
             .OrderBy(f => f.User.Email)

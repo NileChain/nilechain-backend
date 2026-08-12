@@ -61,8 +61,12 @@ public class FarmsController : ControllerBase
         var farm = await _db.Farm
             .AsNoTracking()
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
+                .ThenInclude(fc => fc.CropType)
             .Include(f => f.FarmDocuments)
+            .Include(f => f.FarmImages)
+            .Include(f => f.FarmCertifications)
+                .ThenInclude(fc => fc.Certification)
             .FirstOrDefaultAsync(f => f.FarmId == farmId, ct);
 
         if (farm is null)
@@ -84,14 +88,26 @@ public class FarmsController : ControllerBase
             Latitude = farm.Latitude,
             Longitude = farm.Longitude,
             SizeInFeddans = farm.SizeInFeddans,
+            Description = farm.Description,
             IsVerified = farm.IsVerified,
             RiskScore = riskScore,
             RiskLevel = riskLevel,
             OwnerDisplayName = ToPublicDisplayName(farm.User?.UserName),
-            CropTypes = farm.CropTypes
-                .Select(c => c.Name)
+            CropTypes = farm.FarmCrops
+                .Select(c => c.CropType.Name)
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .OrderBy(n => n)
+                .ToList(),
+            Certifications = farm.FarmCertifications
+                .Where(c => c.ExpiresAt is null || c.ExpiresAt > DateTime.UtcNow)
+                .Select(c => c.Certification.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .OrderBy(n => n)
+                .ToList(),
+            ImageUrls = farm.FarmImages
+                .OrderBy(i => i.SortOrder)
+                .Select(i => i.FileUrl)
+                .Where(u => !string.IsNullOrWhiteSpace(u))
                 .ToList(),
             Documents = farm.FarmDocuments
                 .OrderByDescending(d => d.UploadedAt)

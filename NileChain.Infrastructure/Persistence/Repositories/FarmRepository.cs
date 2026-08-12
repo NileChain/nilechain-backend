@@ -15,14 +15,19 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
     public async Task<Farm?> GetFarmWithDetailsAsync(Guid userId) =>
         await Context.Farm
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
+                .ThenInclude(fc => fc.CropType)
             .Include(f => f.FarmDocuments)
+            .Include(f => f.FarmImages)
+            .Include(f => f.FarmCertifications)
+                .ThenInclude(fc => fc.Certification)
             .FirstOrDefaultAsync(f => f.UserId == userId);
 
     public async Task<Farm?> GetFarmWithDashboardDataAsync(Guid userId) =>
         await Context.Farm
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
+                .ThenInclude(fc => fc.CropType)
             .Include(f => f.FarmDocuments)
             .Include(f => f.FarmCertifications)
             .Include(f => f.FarmMatches)
@@ -33,6 +38,10 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
                     .ThenInclude(sr => sr.CropType)
             .Include(f => f.FarmMatches)
                 .ThenInclude(fm => fm.Contract)
+                    .ThenInclude(c => c!.Transactions)
+            .Include(f => f.FarmMatches)
+                .ThenInclude(fm => fm.Contract)
+                    .ThenInclude(c => c!.Fulfillment)
             .FirstOrDefaultAsync(f => f.UserId == userId);
 
     public async Task<List<FarmMatch>> GetFarmMatchesAsync(
@@ -175,7 +184,7 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
 
     public async Task<IReadOnlyList<Farm>> GetVerifiedFarmsByCropAsync(Guid cropTypeId, string? governorate) =>
         await Context.Farm
-            .Where(f => f.IsVerified && f.CropTypes.Any(c => c.CropTypeId == cropTypeId))
+            .Where(f => f.IsVerified && f.FarmCrops.Any(c => c.CropTypeId == cropTypeId))
             .Where(f => governorate == null || f.Governorate == governorate)
             .ToListAsync();
 
@@ -200,12 +209,16 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
                 .ThenInclude(fm => fm.Farm)
                     .ThenInclude(f => f.User)
             .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.Farm)
+                    .ThenInclude(f => f.FarmCrops)
+            .Include(c => c.FarmMatch)
                 .ThenInclude(fm => fm.SupplyRequest)
                     .ThenInclude(sr => sr.Factory)
                         .ThenInclude(f => f!.User)
             .Include(c => c.FarmMatch)
                 .ThenInclude(fm => fm.SupplyRequest)
                     .ThenInclude(sr => sr.CropType)
+            .Include(c => c.IntegrityAnchors)
             .FirstOrDefaultAsync(c =>
                 c.ContractId == contractId && c.FarmMatch.Farm.UserId == userId);
 
@@ -222,17 +235,27 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
             .FirstOrDefaultAsync(c =>
                 c.MatchId == matchId && c.FarmMatch.Farm.UserId == userId);
 
-    public async Task<List<FarmMatch>> GetConversationsAsync(Guid userId) =>
-        await Context.FarmMatches
+    public async Task<List<FarmMatch>> GetConversationsAsync(Guid userId)
+    {
+        var matches = await Context.FarmMatches
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.Factory)
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.CropType)
             .Include(fm => fm.Messages)
                 .ThenInclude(m => m.Sender)
-            .Where(fm => fm.Farm.UserId == userId && fm.Messages.Count > 0)
-            .OrderByDescending(fm => fm.Messages.Max(m => m.CreatedAt))
+            .Include(fm => fm.Contract)
+            .Where(fm => fm.Farm.UserId == userId)
             .ToListAsync();
+
+        // Include empty match threads so farms can open chat before the first message.
+        return matches
+            .OrderByDescending(fm =>
+                fm.Messages.Count > 0
+                    ? fm.Messages.Max(m => m.CreatedAt)
+                    : fm.CreatedAt)
+            .ToList();
+    }
 
     public async Task<List<Message>> GetMessagesAsync(Guid userId, Guid matchId) =>
         await Context.Messages

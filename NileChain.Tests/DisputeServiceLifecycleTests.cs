@@ -240,22 +240,26 @@ public class DisputeServiceLifecycleTests
             new FactoryRepository(db),
             new Repository<Notification>(db),
             new NoopCloudinary(),
+            new NileChain.Tests.TestDoubles.NoopEscrowPayments(),
             new UnitOfWork(db));
 
     private static FulfillmentService CreateFulfillmentService(NileChainDbContext db) =>
         new(
             new FulfillmentRepository(db),
             new DisputeRepository(db),
+            new PaymentMilestoneRepository(db),
             new FarmRepository(db),
             new FactoryRepository(db),
             new Repository<Contract>(db),
             new Repository<Notification>(db),
             new Repository<SupplyRequest>(db),
+            new NileChain.Tests.TestDoubles.NoopEscrowPayments(),
             new UnitOfWork(db));
 
     private static PaymentMilestoneService CreatePaymentService(NileChainDbContext db) =>
         new(
             new PaymentMilestoneRepository(db),
+            new EscrowTransactionRepository(db),
             new DisputeRepository(db),
             new FarmRepository(db),
             new FactoryRepository(db),
@@ -263,7 +267,9 @@ public class DisputeServiceLifecycleTests
             new Repository<Notification>(db),
             new UnitOfWork(db),
             Options.Create(new PaymentMilestoneOptions()),
-            NullLogger<PaymentMilestoneService>.Instance);
+            Options.Create(new MockPaymentOptions { MockGatewayEnabled = false }),
+            NullLogger<PaymentMilestoneService>.Instance,
+            new NoopCloudinary());
 
     private static async Task<(
         Guid ContractId,
@@ -434,6 +440,9 @@ public class DisputeServiceLifecycleTests
                 .Property(c => c.RowVersion)
                 .IsConcurrencyToken()
                 .ValueGeneratedNever();
+            modelBuilder.Entity<FarmMatch>()
+                .Property(m => m.EligibilitySnapshotJson)
+                .HasColumnType("TEXT");
         }
     }
 }

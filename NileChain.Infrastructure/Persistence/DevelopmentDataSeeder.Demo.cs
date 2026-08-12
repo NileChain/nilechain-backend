@@ -435,7 +435,7 @@ public static partial class DevelopmentDataSeeder
     {
         var existing = await db.Farm
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
             .Include(f => f.FarmCertifications)
             .FirstOrDefaultAsync(f => f.User.Email == email);
         if (existing is not null)
@@ -465,7 +465,16 @@ public static partial class DevelopmentDataSeeder
         foreach (var cropName in crops)
         {
             var crop = cropTypes.First(c => c.Name.Equals(cropName, StringComparison.OrdinalIgnoreCase));
-            farm.CropTypes.Add(crop);
+            farm.FarmCrops.Add(new FarmCrop
+            {
+                FarmId = farmId,
+                CropTypeId = crop.CropTypeId,
+                AvailableQuantityTons = size * 2m,
+                AvailableFrom = DateTime.UtcNow.Date.AddMonths(-1),
+                AvailableTo = DateTime.UtcNow.Date.AddMonths(6),
+                MinPricePerTon = 8000m,
+                CropType = crop
+            });
         }
 
         for (var i = 0; i < certs.Length; i++)

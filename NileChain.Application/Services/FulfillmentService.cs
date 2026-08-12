@@ -14,30 +14,36 @@ public sealed class FulfillmentService : IFulfillmentService
 {
     private readonly IFulfillmentRepository _fulfillments;
     private readonly IDisputeRepository _disputes;
+    private readonly IPaymentMilestoneRepository _milestones;
     private readonly IFarmRepository _farms;
     private readonly IFactoryRepository _factories;
     private readonly IRepository<Contract> _contracts;
     private readonly IRepository<Notification> _notifications;
     private readonly IRepository<SupplyRequest> _supplyRequests;
+    private readonly IMockEscrowPaymentService _escrowPayments;
     private readonly IUnitOfWork _unitOfWork;
 
     public FulfillmentService(
         IFulfillmentRepository fulfillments,
         IDisputeRepository disputes,
+        IPaymentMilestoneRepository milestones,
         IFarmRepository farms,
         IFactoryRepository factories,
         IRepository<Contract> contracts,
         IRepository<Notification> notifications,
         IRepository<SupplyRequest> supplyRequests,
+        IMockEscrowPaymentService escrowPayments,
         IUnitOfWork unitOfWork)
     {
         _fulfillments = fulfillments;
         _disputes = disputes;
+        _milestones = milestones;
         _farms = farms;
         _factories = factories;
         _contracts = contracts;
         _notifications = notifications;
         _supplyRequests = supplyRequests;
+        _escrowPayments = escrowPayments;
         _unitOfWork = unitOfWork;
     }
 
@@ -54,17 +60,79 @@ public sealed class FulfillmentService : IFulfillmentService
         return Result<FulfillmentDto>.Success(Map(fulfillment));
     }
 
-    public Task<Result<FulfillmentDto>> MarkShippedAsync(Guid farmUserId, Guid contractId) =>
-        TransitionAsync(farmUserId, contractId, asFarm: true, FulfillmentStatus.Shipped);
+    public Task<Result<FulfillmentDto>> MarkShippedAsync(
+        Guid farmUserId,
+        Guid contractId,
+        ShipFulfillmentRequest? request = null) =>
+        TransitionAsync(
+            farmUserId,
+            contractId,
+            asFarm: true,
+            FulfillmentStatus.Shipped,
+            carrier: request?.Carrier?.Trim(),
+            trackingNumber: request?.TrackingNumber?.Trim(),
+            shippedNotes: request?.Notes?.Trim());
 
-    public Task<Result<FulfillmentDto>> MarkReceivedAsync(Guid factoryUserId, Guid contractId) =>
-        TransitionAsync(factoryUserId, contractId, asFarm: false, FulfillmentStatus.Received);
+    public Task<Result<FulfillmentDto>> MarkReceivedAsync(
+        Guid factoryUserId,
+        Guid contractId,
+        ReceiveFulfillmentRequest? request = null)
+    {
+        if (request is null || request.WeighedQuantityTons <= 0)
+            return Task.FromResult(Result<FulfillmentDto>.Failure(FulfillmentErrors.WeighbridgeRequired));
+
+        var ticket = string.IsNullOrWhiteSpace(request.WeighbridgeTicketUrl)
+            ? null
+            : request.WeighbridgeTicketUrl.Trim();
+
+        return TransitionAsync(
+            factoryUserId,
+            contractId,
+            asFarm: false,
+            FulfillmentStatus.Received,
+            weighedQuantityTons: request.WeighedQuantityTons,
+            weighbridgeTicketUrl: ticket);
+    }
+
+    public Task<Result<FulfillmentDto>> MarkRejectedAtGateAsync(
+        Guid factoryUserId,
+        Guid contractId,
+        RejectAtGateRequest request)
+    {
+        if (request is null
+            || !Enum.TryParse<GateRejectReason>(request.Reason, ignoreCase: true, out var reason))
+        {
+            return Task.FromResult(Result<FulfillmentDto>.Failure(FulfillmentErrors.InvalidGateReject));
+        }
+
+        var notes = request.Notes?.Trim();
+        if (reason == GateRejectReason.Other && string.IsNullOrWhiteSpace(notes))
+            return Task.FromResult(Result<FulfillmentDto>.Failure(FulfillmentErrors.GateRejectNotesRequired));
+
+        return TransitionAsync(
+            factoryUserId,
+            contractId,
+            asFarm: false,
+            FulfillmentStatus.RejectedAtGate,
+            requireNoActiveDispute: false,
+            gateRejectReason: reason,
+            gateRejectNotes: notes);
+    }
 
     public Task<Result<FulfillmentDto>> MarkQualityCheckedAsync(
         Guid factoryUserId,
         Guid contractId,
-        string? notes) =>
-        TransitionAsync(factoryUserId, contractId, asFarm: false, FulfillmentStatus.QualityChecked, notes);
+        QualityCheckRequest? request = null) =>
+        TransitionAsync(
+            factoryUserId,
+            contractId,
+            asFarm: false,
+            FulfillmentStatus.QualityChecked,
+            qualityNotes: request?.Notes?.Trim(),
+            acceptedQuantityTons: request?.AcceptedQuantityTons,
+            discountPercent: ClampDiscount(request?.DiscountPercent ?? 0m),
+            specsMet: request?.SpecsMet,
+            specsOutcomeNotes: request?.SpecsOutcomeNotes?.Trim());
 
     public Task<Result<FulfillmentDto>> MarkFulfilledAsync(Guid factoryUserId, Guid contractId) =>
         TransitionAsync(factoryUserId, contractId, asFarm: false, FulfillmentStatus.Fulfilled);
@@ -72,7 +140,10 @@ public sealed class FulfillmentService : IFulfillmentService
     public async Task EnsureCreatedForSignedContractAsync(
         Guid contractId,
         Guid actorUserId,
-        DateTime? plannedShipDate = null)
+        DateTime? plannedShipDate = null,
+        DeliveryPoint? deliveryPoint = null,
+        DealParty? freightPayer = null,
+        DealParty? transitRisk = null)
     {
         var existing = await _fulfillments.GetByContractIdAsync(contractId, includeEvents: false);
         if (existing is not null)
@@ -84,12 +155,21 @@ public sealed class FulfillmentService : IFulfillmentService
             || !contract.IsFullySigned)
             return;
 
+        var fromRequest = contract.FarmMatch?.SupplyRequest;
+        var terms = DeliveryTermsPolicy.Resolve(
+            deliveryPoint ?? fromRequest?.DeliveryPoint,
+            freightPayer ?? fromRequest?.FreightPayer,
+            transitRisk ?? fromRequest?.TransitRisk);
+
         var fulfillment = new Fulfillment
         {
             FulfillmentId = Guid.NewGuid(),
             ContractId = contractId,
             Status = FulfillmentStatus.Planned,
             PlannedShipDate = plannedShipDate,
+            DeliveryPoint = terms.Point,
+            FreightPayer = terms.FreightPayer,
+            TransitRisk = terms.TransitRisk,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -179,12 +259,29 @@ public sealed class FulfillmentService : IFulfillmentService
         Guid contractId,
         bool asFarm,
         FulfillmentStatus to,
-        string? qualityNotes = null)
+        string? qualityNotes = null,
+        string? carrier = null,
+        string? trackingNumber = null,
+        string? shippedNotes = null,
+        decimal? acceptedQuantityTons = null,
+        decimal discountPercent = 0m,
+        bool? specsMet = null,
+        string? specsOutcomeNotes = null,
+        bool requireNoActiveDispute = true,
+        decimal? weighedQuantityTons = null,
+        string? weighbridgeTicketUrl = null,
+        GateRejectReason? gateRejectReason = null,
+        string? gateRejectNotes = null)
     {
         if (asFarm && !FulfillmentTransitions.IsFarmAction(to))
             return Result<FulfillmentDto>.Failure(FulfillmentErrors.Forbidden);
         if (!asFarm && !FulfillmentTransitions.IsFactoryAction(to))
             return Result<FulfillmentDto>.Failure(FulfillmentErrors.Forbidden);
+
+        if (acceptedQuantityTons is < 0)
+            return Result<FulfillmentDto>.Failure(FulfillmentErrors.InvalidQualityCheck);
+        if (discountPercent is < 0 or > 100)
+            return Result<FulfillmentDto>.Failure(FulfillmentErrors.InvalidQualityCheck);
 
         var access = await EnsurePartyAccessAsync(userId, contractId, asFarm);
         if (access.IsFailure)
@@ -200,10 +297,24 @@ public sealed class FulfillmentService : IFulfillmentService
 
         if (fulfillment.Status == FulfillmentStatus.Voided)
             return Result<FulfillmentDto>.Failure(FulfillmentErrors.Voided);
+        if (fulfillment.Status == FulfillmentStatus.RejectedAtGate)
+            return Result<FulfillmentDto>.Failure(FulfillmentErrors.InvalidTransition);
+
+        if (to == FulfillmentStatus.QualityChecked
+            && fulfillment.WeighedQuantityTons is decimal weighedCap
+            && acceptedQuantityTons is decimal accepted
+            && accepted > weighedCap)
+        {
+            return Result<FulfillmentDto>.Failure(FulfillmentErrors.AcceptedExceedsWeighed);
+        }
 
         var from = fulfillment.Status;
         if (!FulfillmentTransitions.CanTransition(from, to))
             return Result<FulfillmentDto>.Failure(FulfillmentErrors.InvalidTransition);
+
+        var returnFreight = to == FulfillmentStatus.RejectedAtGate
+            ? DeliveryTermsPolicy.ReturnFreightBearer(fulfillment.DeliveryPoint)
+            : (DealParty?)null;
 
         await using var tx = await _unitOfWork.BeginTransactionAsync();
 
@@ -213,15 +324,41 @@ public sealed class FulfillmentService : IFulfillmentService
             to,
             DateTime.UtcNow,
             qualityNotes,
-            requireNoActiveDispute: true);
+            requireNoActiveDispute,
+            carrier,
+            trackingNumber,
+            shippedNotes,
+            acceptedQuantityTons,
+            to == FulfillmentStatus.QualityChecked ? discountPercent : null,
+            to == FulfillmentStatus.QualityChecked ? specsMet : null,
+            to == FulfillmentStatus.QualityChecked ? specsOutcomeNotes : null,
+            weighedQuantityTons,
+            weighbridgeTicketUrl,
+            gateRejectReason,
+            gateRejectNotes,
+            returnFreight);
 
         if (!ok)
         {
-            // Classify: active dispute in the same WHERE vs concurrent status change.
-            var frozen = await _disputes.HasActiveDisputeAsync(contractId);
+            var frozen = requireNoActiveDispute && await _disputes.HasActiveDisputeAsync(contractId);
             return Result<FulfillmentDto>.Failure(
                 frozen ? FulfillmentErrors.FrozenByDispute : FulfillmentErrors.Conflict);
         }
+
+        var eventNote = to switch
+        {
+            FulfillmentStatus.Shipped => BuildShipNote(carrier, trackingNumber, shippedNotes),
+            FulfillmentStatus.Received =>
+                $"Weighed {weighedQuantityTons:0.###} t"
+                + (string.IsNullOrWhiteSpace(weighbridgeTicketUrl) ? "" : " · ticket attached"),
+            FulfillmentStatus.QualityChecked => BuildQcNote(
+                qualityNotes, acceptedQuantityTons, discountPercent, specsMet, specsOutcomeNotes),
+            FulfillmentStatus.RejectedAtGate =>
+                $"Rejected at gate: {gateRejectReason}"
+                + (string.IsNullOrWhiteSpace(gateRejectNotes) ? "" : $" — {gateRejectNotes}")
+                + $" · return freight: {returnFreight}",
+            _ => qualityNotes
+        };
 
         await _fulfillments.AddEventAsync(new FulfillmentEvent
         {
@@ -230,9 +367,76 @@ public sealed class FulfillmentService : IFulfillmentService
             FromStatus = from,
             ToStatus = to,
             ActorUserId = userId,
-            Note = qualityNotes,
+            Note = eventNote,
             CreatedAt = DateTime.UtcNow
         });
+
+        if (to == FulfillmentStatus.Received && weighedQuantityTons is decimal weighed)
+        {
+            var contracted = contract.FarmMatch?.SupplyRequest?.QuantityTons ?? 0m;
+            if (contracted > 0 && weighed < contracted)
+            {
+                var payable = Math.Min(weighed, contracted);
+                var factor = payable / contracted;
+                var scaled = await _milestones.TryScaleOpenMilestonesByFactorAsync(
+                    contractId, factor, userId, DateTime.UtcNow);
+                foreach (var (txId, prev, next) in scaled)
+                {
+                    var money = await _escrowPayments.ApplyQcAmountAdjustmentAsync(
+                        contractId, txId, prev, next);
+                    if (money.IsFailure)
+                        return Result<FulfillmentDto>.Failure(money.Error!);
+                }
+            }
+        }
+
+        if (to == FulfillmentStatus.RejectedAtGate)
+        {
+            var refund = await _escrowPayments.RefundLeftoverDealHoldAsync(
+                contractId, userId, "Rejected at gate");
+            if (refund.IsFailure)
+                return Result<FulfillmentDto>.Failure(refund.Error!);
+        }
+
+        if (to == FulfillmentStatus.QualityChecked)
+        {
+            var requestedQty = contract.FarmMatch?.SupplyRequest?.QuantityTons;
+            var weighedAtReceive = fulfillment.WeighedQuantityTons;
+            var qtyBaseline = weighedAtReceive is > 0 && requestedQty is > 0
+                ? Math.Min(weighedAtReceive.Value, requestedQty.Value)
+                : weighedAtReceive is > 0 ? weighedAtReceive.Value : requestedQty;
+
+            if (discountPercent <= 0
+                && acceptedQuantityTons is > 0
+                && qtyBaseline is > 0
+                && acceptedQuantityTons.Value < qtyBaseline.Value)
+            {
+                discountPercent = decimal.Round(
+                    (1m - (acceptedQuantityTons.Value / qtyBaseline.Value)) * 100m,
+                    2,
+                    MidpointRounding.AwayFromZero);
+                discountPercent = ClampDiscount(discountPercent);
+            }
+
+            if (discountPercent > 0)
+            {
+                var adjusted = await _milestones.TryApplyDiscountToFirstOpenMilestoneAsync(
+                    contractId,
+                    discountPercent,
+                    userId,
+                    DateTime.UtcNow);
+                if (adjusted.TransactionId is Guid txId
+                    && adjusted.PreviousAmount is decimal prev
+                    && adjusted.NewAmount is decimal next
+                    && next < prev)
+                {
+                    var money = await _escrowPayments.ApplyQcAmountAdjustmentAsync(
+                        contractId, txId, prev, next);
+                    if (money.IsFailure)
+                        return Result<FulfillmentDto>.Failure(money.Error!);
+                }
+            }
+        }
 
         if (to == FulfillmentStatus.Fulfilled)
         {
@@ -250,6 +454,34 @@ public sealed class FulfillmentService : IFulfillmentService
 
         var updated = await _fulfillments.GetByContractIdAsync(contractId);
         return Result<FulfillmentDto>.Success(Map(updated!));
+    }
+
+    private static decimal ClampDiscount(decimal value) =>
+        value < 0 ? 0 : value > 100 ? 100 : value;
+
+    private static string? BuildShipNote(string? carrier, string? tracking, string? notes)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(carrier)) parts.Add($"Carrier: {carrier}");
+        if (!string.IsNullOrWhiteSpace(tracking)) parts.Add($"Tracking: {tracking}");
+        if (!string.IsNullOrWhiteSpace(notes)) parts.Add(notes);
+        return parts.Count == 0 ? null : string.Join(" · ", parts);
+    }
+
+    private static string? BuildQcNote(
+        string? notes,
+        decimal? acceptedQty,
+        decimal discount,
+        bool? specsMet = null,
+        string? specsOutcomeNotes = null)
+    {
+        var parts = new List<string>();
+        if (acceptedQty is not null) parts.Add($"Accepted: {acceptedQty} t");
+        if (discount > 0) parts.Add($"Discount: {discount:0.##}%");
+        if (specsMet is not null) parts.Add(specsMet.Value ? "Specs: met" : "Specs: not met");
+        if (!string.IsNullOrWhiteSpace(specsOutcomeNotes)) parts.Add(specsOutcomeNotes);
+        if (!string.IsNullOrWhiteSpace(notes)) parts.Add(notes);
+        return parts.Count == 0 ? null : string.Join(" · ", parts);
     }
 
     private async Task NotifyCounterpartyAsync(
@@ -270,6 +502,7 @@ public sealed class FulfillmentService : IFulfillmentService
             FulfillmentStatus.Received => ("Delivery received", "FulfillmentReceived"),
             FulfillmentStatus.QualityChecked => ("Quality check recorded", "FulfillmentQualityChecked"),
             FulfillmentStatus.Fulfilled => ("Contract fulfilled", "FulfillmentFulfilled"),
+            FulfillmentStatus.RejectedAtGate => ("Load rejected at the factory gate", "FulfillmentRejectedAtGate"),
             _ => ("Fulfillment updated", "Fulfillment")
         };
 
@@ -323,6 +556,25 @@ public sealed class FulfillmentService : IFulfillmentService
         FulfilledAt = f.FulfilledAt,
         VoidedAt = f.VoidedAt,
         QualityNotes = f.QualityNotes,
+        Carrier = f.Carrier,
+        TrackingNumber = f.TrackingNumber,
+        ShippedNotes = f.ShippedNotes,
+        AcceptedQuantityTons = f.AcceptedQuantityTons,
+        DiscountPercent = f.DiscountPercent,
+        SpecsMet = f.SpecsMet,
+        SpecsOutcomeNotes = f.SpecsOutcomeNotes,
+        DeliveryPoint = f.DeliveryPoint.ToString(),
+        FreightPayer = f.FreightPayer.ToString(),
+        TransitRisk = f.TransitRisk.ToString(),
+        ContractedQuantityTons = f.Contract?.FarmMatch?.SupplyRequest?.QuantityTons,
+        WeighedQuantityTons = f.WeighedQuantityTons,
+        WeighbridgeTicketUrl = f.WeighbridgeTicketUrl,
+        RejectedAtGateAt = f.RejectedAtGateAt,
+        GateRejectReason = f.GateRejectReason?.ToString(),
+        GateRejectNotes = f.GateRejectNotes,
+        ReturnFreightBearer = f.ReturnFreightBearer?.ToString(),
+        RequestedQuality = StructuredQualitySpecs.Parse(
+            f.Contract?.FarmMatch?.SupplyRequest?.QualitySpecs),
         Events = (f.Events ?? Array.Empty<FulfillmentEvent>())
             .OrderBy(e => e.CreatedAt)
             .Select(e => new FulfillmentEventDto

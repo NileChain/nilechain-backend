@@ -18,6 +18,33 @@ public class FulfillmentConfiguration : IEntityTypeConfiguration<Fulfillment>
             .IsRequired();
 
         builder.Property(f => f.QualityNotes).HasMaxLength(2000);
+        builder.Property(f => f.Carrier).HasMaxLength(120);
+        builder.Property(f => f.TrackingNumber).HasMaxLength(120);
+        builder.Property(f => f.ShippedNotes).HasMaxLength(1000);
+        builder.Property(f => f.AcceptedQuantityTons).HasPrecision(18, 3);
+        builder.Property(f => f.DiscountPercent).HasPrecision(5, 2);
+        builder.Property(f => f.SpecsOutcomeNotes).HasMaxLength(2000);
+        builder.Property(f => f.DeliveryPoint)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+        builder.Property(f => f.FreightPayer)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+        builder.Property(f => f.TransitRisk)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+        builder.Property(f => f.WeighedQuantityTons).HasPrecision(18, 3);
+        builder.Property(f => f.WeighbridgeTicketUrl).HasMaxLength(2000);
+        builder.Property(f => f.GateRejectReason)
+            .HasConversion<string>()
+            .HasMaxLength(32);
+        builder.Property(f => f.GateRejectNotes).HasMaxLength(500);
+        builder.Property(f => f.ReturnFreightBearer)
+            .HasConversion<string>()
+            .HasMaxLength(20);
 
         builder.HasIndex(f => f.ContractId)
             .IsUnique()

@@ -11,9 +11,14 @@ public interface IFactoryRepository : IRepository<Factory>
     Task<(List<SupplyRequest> Items, int TotalCount)> GetSupplyRequestsPagedAsync(
         Guid factoryId,
         int page,
-        int pageSize);
+        int pageSize,
+        string? status = null);
+    Task<SupplyRequest?> GetSupplyRequestDetailAsync(Guid factoryId, Guid requestId);
+    Task<Factory?> GetFactoryWithDashboardDataAsync(Guid userId);
+    Task<List<FarmMatch>> GetMatchesWithFarmForFactoryAsync(Guid factoryId, Guid farmId);
     Task<List<FarmMatch>> GetMatchesByRequestIdAsync(Guid factoryId, Guid requestId, string? sort = null);
     Task<FarmMatch?> GetMatchForFactoryAsync(Guid factoryId, Guid matchId);
+    Task<List<FarmCrop>> GetPublishedFarmCropsAsync(Guid? cropTypeId, string? governorate);
     Task<List<FarmMatch>> GetConversationsAsync(Guid factoryId);
     Task<List<Message>> GetMessagesAsync(Guid factoryId, Guid matchId);
     Task<List<Contract>> GetContractsAsync(Guid factoryId);

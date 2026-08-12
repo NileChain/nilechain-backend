@@ -12,6 +12,28 @@ public class FarmDashboardResponse
     public List<ImprovementTip> ImprovementTips { get; set; } = new();
     /// <summary>Chronological reliability/risk scores (0–100) for sparkline.</summary>
     public List<ReliabilityTrendPoint> ReliabilityTrend { get; set; } = new();
+    public FarmCollectionsSummaryDto CollectionsSummary { get; set; } = new();
+    public int ExpiringCertifications { get; set; }
+    public int ExpiredCertifications { get; set; }
+    public decimal? OnTimeFulfillmentRate { get; set; }
+    public decimal? QcIssueRate { get; set; }
+    public List<RepeatBuyerDto> RepeatBuyers { get; set; } = new();
+}
+
+public class RepeatBuyerDto
+{
+    public Guid FactoryId { get; set; }
+    public string FactoryName { get; set; } = default!;
+    public int CompletedContracts { get; set; }
+}
+
+public class FarmCollectionsSummaryDto
+{
+    public decimal PendingAmount { get; set; }
+    public decimal AwaitingConfirmAmount { get; set; }
+    public decimal ReceivedAmount { get; set; }
+    public decimal OverdueAmount { get; set; }
+    public string Currency { get; set; } = "EGP";
 }
 
 public class ReliabilityTrendPoint

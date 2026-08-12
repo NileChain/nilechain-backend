@@ -159,6 +159,7 @@ public class Round2BusinessLogicRemediationTests
         {
             (Status: FarmMatchStatus.Proposed, Created: now.AddDays(-15)),
             (Status: FarmMatchStatus.Proposed, Created: now.AddDays(-1)),
+            (Status: FarmMatchStatus.Countered, Created: now.AddDays(-20)),
             (Status: FarmMatchStatus.Accepted, Created: now.AddDays(-30)),
             (Status: FarmMatchStatus.Expired, Created: now.AddDays(-30)),
         };
@@ -170,8 +171,9 @@ public class Round2BusinessLogicRemediationTests
             now,
             expiryDays: 14);
 
-        Assert.Single(expired);
-        Assert.Equal(FarmMatchStatus.Proposed, expired[0].Status);
+        Assert.Equal(2, expired.Count);
+        Assert.Contains(expired, m => m.Status == FarmMatchStatus.Proposed);
+        Assert.Contains(expired, m => m.Status == FarmMatchStatus.Countered);
 
         var contracts = new[]
         {

@@ -21,6 +21,9 @@ public class ContractConfiguration : IEntityTypeConfiguration<Contract>
         builder.Property(c => c.RowVersion)
             .IsRowVersion();
 
+        builder.Property(c => c.FundsHeldEgp)
+            .HasPrecision(18, 2);
+
         builder.HasOne(c => c.FarmMatch)
             .WithOne(fm => fm.Contract)
             .HasForeignKey<Contract>(c => c.MatchId)

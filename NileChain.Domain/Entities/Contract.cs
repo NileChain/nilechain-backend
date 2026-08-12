@@ -20,6 +20,18 @@ public class Contract
     /// <summary>Farm party signature timestamp. Null until farm explicitly signs.</summary>
     public DateTime? FarmSignedAt { get; set; }
 
+    /// <summary>When factory wallet funds for the full deal were moved Available → Held at full sign.</summary>
+    public DateTime? FundsHeldAt { get; set; }
+
+    /// <summary>
+    /// Remaining deal hold (EGP) including platform fees. Set at full sign; reduced on
+    /// release, QC refund, and unwind. <see cref="HasDealFundsHeld"/> stays true after
+    /// remaining hits zero so later milestones do not debit Available again.
+    /// </summary>
+    public decimal? FundsHeldEgp { get; set; }
+
+    public bool HasDealFundsHeld => FundsHeldAt.HasValue;
+
     public bool IsFactorySigned => FactorySignedAt.HasValue;
     public bool IsFarmSigned => FarmSignedAt.HasValue;
     public bool IsFullySigned => IsFactorySigned && IsFarmSigned;
@@ -30,6 +42,8 @@ public class Contract
     public ICollection<RagDocument> RagDocuments { get; set; } = new List<RagDocument>();
     public ICollection<Transaction> Transactions { get; set; } = new List<Transaction>();
     public ICollection<Review> Reviews { get; set; } = new List<Review>();
+    public ICollection<ContractAttachment> Attachments { get; set; } = new List<ContractAttachment>();
+    public ICollection<ContractIntegrityAnchor> IntegrityAnchors { get; set; } = new List<ContractIntegrityAnchor>();
 
     /// <summary>Optimistic concurrency token (SQL Server rowversion).</summary>
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();

@@ -19,4 +19,19 @@ public class FactoryMatchItemDto
     public bool UsedGovernorateFallback { get; set; }
     public string Status { get; set; } = default!;
     public DateTime CreatedAt { get; set; }
+    public Guid? ContractId { get; set; }
+    public bool ContractFullySigned { get; set; }
+    public bool CanMessage { get; set; }
+
+    public decimal? RequestQuantityTons { get; set; }
+    public decimal? RequestPricePerTon { get; set; }
+    public DateTime? RequestDeliveryDate { get; set; }
+    public decimal? CounterQuantityTons { get; set; }
+    public decimal? CounterPricePerTon { get; set; }
+    public DateTime? CounterDeliveryDate { get; set; }
+    public string? CounterNote { get; set; }
+    public bool CounterAccepted { get; set; }
+    public decimal EffectiveQuantityTons { get; set; }
+    public decimal? EffectivePricePerTon { get; set; }
+    public DateTime? EffectiveDeliveryDate { get; set; }
 }

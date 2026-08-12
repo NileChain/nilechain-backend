@@ -32,4 +32,14 @@ public class MarketPricesController : ControllerBase
         var result = await _marketPriceService.GetSeriesAsync();
         return result.ToActionResult();
     }
+
+    [HttpGet("fair-hint")]
+    public async Task<IActionResult> GetFairHint(
+        [FromQuery] string crop,
+        [FromQuery] decimal price,
+        [FromQuery] string? governorate)
+    {
+        var result = await _marketPriceService.GetFairPriceHintAsync(crop, price, governorate);
+        return result.ToActionResult();
+    }
 }

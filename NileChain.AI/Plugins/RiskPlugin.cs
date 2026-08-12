@@ -22,7 +22,9 @@ public class RiskPlugin
     private const decimal ProfileGovernoratePoints = 4m;
     private const decimal ProfilePhonePoints = 3m;
     private const decimal ProfileSizePoints = 4m;
-    private const decimal ProfileDocumentsPoints = 3m;
+    private const decimal ProfileDocumentsPoints = 2m;
+    private const decimal ProfileDescriptionPoints = 1m;
+    private const decimal ProfileImagesPoints = 1m;
     private const decimal ProfileCropsPoints = 3m;
 
     private const decimal PointsPerCertification = 12.5m;
@@ -43,8 +45,9 @@ public class RiskPlugin
     {
         var farm = await _context.Farm
             .Include(f => f.User)
-            .Include(f => f.CropTypes)
+            .Include(f => f.FarmCrops)
             .Include(f => f.FarmDocuments)
+            .Include(f => f.FarmImages)
             .Include(f => f.FarmCertifications)
             .FirstOrDefaultAsync(f => f.FarmId == farmId);
 
@@ -85,9 +88,6 @@ public class RiskPlugin
 
     private static decimal CalculateProfileScore(Farm farm)
     {
-        // TODO: Farm has no Description field — cannot score description.
-        // TODO: Farm has no dedicated Images collection — only FarmDocument exists (scored below as documents).
-
         decimal score = 0;
 
         if (!string.IsNullOrWhiteSpace(farm.Name))
@@ -108,7 +108,13 @@ public class RiskPlugin
         if (farm.FarmDocuments is { Count: > 0 })
             score += ProfileDocumentsPoints;
 
-        if (farm.CropTypes is { Count: > 0 })
+        if (!string.IsNullOrWhiteSpace(farm.Description))
+            score += ProfileDescriptionPoints;
+
+        if (farm.FarmImages is { Count: > 0 })
+            score += ProfileImagesPoints;
+
+        if (farm.FarmCrops is { Count: > 0 })
             score += ProfileCropsPoints;
 
         return Clamp(score, 0m, ProfileMaxPoints);
@@ -124,7 +130,6 @@ public class RiskPlugin
         var validCount = certifications.Count(c =>
             c.ExpiresAt is null || c.ExpiresAt > now);
 
-        // TODO: No admin API to assign FarmCertification / Certification catalog yet — score is 0 until data exists.
         return Clamp(validCount * PointsPerCertification, 0m, CertificationMaxPoints);
     }
 

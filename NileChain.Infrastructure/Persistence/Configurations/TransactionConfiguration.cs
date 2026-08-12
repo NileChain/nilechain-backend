@@ -15,6 +15,9 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Transaction>
         builder.Property(t => t.Percent).HasPrecision(5, 2);
         builder.Property(t => t.Label).HasMaxLength(100).IsRequired();
         builder.Property(t => t.PaymentMethod).HasMaxLength(50);
+        builder.Property(t => t.ReceiptUrl).HasMaxLength(1000);
+        builder.Property(t => t.ReceiptPublicId).HasMaxLength(300);
+        builder.Property(t => t.ReceiptFileName).HasMaxLength(260);
 
         builder.Property(t => t.Status)
             .HasConversion<string>()

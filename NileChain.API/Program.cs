@@ -27,13 +27,10 @@ LoadDotEnv(Path.Combine(builder.Environment.ContentRootPath, ".env"));
 LoadDotEnv(Path.Combine(builder.Environment.ContentRootPath, "..", ".env"));
 builder.Configuration.AddEnvironmentVariables();
 
-// Heroku sets PORT; honor ASPNETCORE_URLS when already provided.
-if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
-{
-    var port = Environment.GetEnvironmentVariable("PORT");
-    if (!string.IsNullOrWhiteSpace(port))
-        builder.WebHost.UseUrls($"http://*:{port}");
-}
+// PaaS (Heroku/Railway/Render) inject PORT. Prefer it over the aspnet image default :8080.
+var port = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(port))
+    builder.WebHost.UseUrls($"http://*:{port}");
 
 ValidateProductionConfiguration(builder);
 
@@ -52,6 +49,7 @@ builder.Services.AddHostedService<NileChain.API.HostedServices.ProactiveMonitorH
 builder.Services.Configure<NileChain.API.Options.ContractMatchExpiryOptions>(
     builder.Configuration.GetSection(NileChain.API.Options.ContractMatchExpiryOptions.SectionName));
 builder.Services.AddHostedService<NileChain.API.HostedServices.ContractMatchExpiryHostedService>();
+builder.Services.AddHostedService<NileChain.API.HostedServices.FarmMarketplaceReminderHostedService>();
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<NileChain.API.Filters.FluentValidationActionFilter>();
@@ -250,9 +248,13 @@ static string[] ResolveCorsOrigins(IConfiguration configuration)
         }
     }
 
+    var frontendBase = configuration["App:FrontendBaseUrl"];
+    if (!string.IsNullOrWhiteSpace(frontendBase))
+        origins.Add(frontendBase);
+
     var distinct = origins
         .Select(o => o.Trim().TrimEnd('/'))
-        .Where(o => o.Length > 0)
+        .Where(o => o.Length > 0 && !o.Equals("__SET_IN_LOCAL_CONFIG__", StringComparison.OrdinalIgnoreCase))
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
 

@@ -36,5 +36,35 @@ public class CreateSupplyRequestRequestValidator : AbstractValidator<CreateSuppl
             .Must(s => string.IsNullOrWhiteSpace(s)
                 || AllowedScopes.Contains(s, StringComparer.OrdinalIgnoreCase))
             .WithMessage("GeographicScope must be Exact, Nearby, or Nationwide.");
+
+        RuleFor(x => x.DeliveryPoint)
+            .Must(s => string.IsNullOrWhiteSpace(s)
+                || DeliveryTermsPolicy.TryParsePoint(s, out _))
+            .WithMessage("DeliveryPoint must be FarmGate or FactoryGate.");
+
+        RuleFor(x => x.FreightPayer)
+            .Must(s => string.IsNullOrWhiteSpace(s)
+                || DeliveryTermsPolicy.TryParseParty(s, out _))
+            .WithMessage("FreightPayer must be Farm or Factory.");
+
+        RuleFor(x => x.TransitRisk)
+            .Must(s => string.IsNullOrWhiteSpace(s)
+                || DeliveryTermsPolicy.TryParseParty(s, out _))
+            .WithMessage("TransitRisk must be Farm or Factory.");
+
+        When(x => x.StructuredQuality is not null, () =>
+        {
+            RuleFor(x => x.StructuredQuality!.MoistureMaxPercent)
+                .InclusiveBetween(0, 100)
+                .When(x => x.StructuredQuality!.MoistureMaxPercent is not null);
+
+            RuleFor(x => x.StructuredQuality!.ImpuritiesMaxPercent)
+                .InclusiveBetween(0, 100)
+                .When(x => x.StructuredQuality!.ImpuritiesMaxPercent is not null);
+
+            RuleFor(x => x.StructuredQuality!.Grade)
+                .MaximumLength(40)
+                .When(x => !string.IsNullOrWhiteSpace(x.StructuredQuality!.Grade));
+        });
     }
 }

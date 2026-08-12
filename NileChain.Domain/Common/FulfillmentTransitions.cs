@@ -9,13 +9,16 @@ namespace NileChain.Domain.Common;
 public static class FulfillmentTransitions
 {
     public static bool IsTerminal(FulfillmentStatus status) =>
-        status is FulfillmentStatus.Fulfilled or FulfillmentStatus.Voided;
+        status is FulfillmentStatus.Fulfilled
+            or FulfillmentStatus.Voided
+            or FulfillmentStatus.RejectedAtGate;
 
     public static bool CanTransition(FulfillmentStatus from, FulfillmentStatus to) =>
         (from, to) switch
         {
             (FulfillmentStatus.Planned, FulfillmentStatus.Shipped) => true,
             (FulfillmentStatus.Shipped, FulfillmentStatus.Received) => true,
+            (FulfillmentStatus.Shipped, FulfillmentStatus.RejectedAtGate) => true,
             (FulfillmentStatus.Received, FulfillmentStatus.QualityChecked) => true,
             (FulfillmentStatus.Received, FulfillmentStatus.Fulfilled) => true,
             (FulfillmentStatus.QualityChecked, FulfillmentStatus.Fulfilled) => true,
@@ -32,5 +35,6 @@ public static class FulfillmentTransitions
     public static bool IsFactoryAction(FulfillmentStatus to) =>
         to is FulfillmentStatus.Received
             or FulfillmentStatus.QualityChecked
-            or FulfillmentStatus.Fulfilled;
+            or FulfillmentStatus.Fulfilled
+            or FulfillmentStatus.RejectedAtGate;
 }

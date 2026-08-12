@@ -37,21 +37,6 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("ContractRagDocument", (string)null);
                 });
 
-            modelBuilder.Entity("CropTypeFarm", b =>
-                {
-                    b.Property<Guid>("CropTypesCropTypeId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("FarmsFarmId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.HasKey("CropTypesCropTypeId", "FarmsFarmId");
-
-                    b.HasIndex("FarmsFarmId");
-
-                    b.ToTable("FarmCropType", (string)null);
-                });
-
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
                 {
                     b.Property<int>("Id")
@@ -255,6 +240,13 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("FarmSignedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("FundsHeldAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("FundsHeldEgp")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<string>("GeneratedText")
                         .HasColumnType("nvarchar(max)");
 
@@ -284,6 +276,107 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("Contract", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractAttachment", b =>
+                {
+                    b.Property<Guid>("AttachmentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("FileUrl")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("PublicId")
+                        .IsRequired()
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<Guid>("UploadedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("AttachmentId");
+
+                    b.HasIndex("ContractId");
+
+                    b.ToTable("ContractAttachment", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractIntegrityAnchor", b =>
+                {
+                    b.Property<Guid>("AnchorId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("AnchoredAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("ChainIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PreviousHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("TxRef")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.HasKey("AnchorId");
+
+                    b.HasIndex("ChainIndex")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ContractIntegrityAnchor_ChainIndex");
+
+                    b.HasIndex("ContentHash")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ContractIntegrityAnchor_ContentHash");
+
+                    b.HasIndex("ContractId", "Status")
+                        .HasDatabaseName("IX_ContractIntegrityAnchor_ContractId_Status");
+
+                    b.ToTable("ContractIntegrityAnchor", (string)null);
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.CropRequest", b =>
@@ -521,6 +614,117 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("DisputeEvidence", (string)null);
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.EscrowTransaction", b =>
+                {
+                    b.Property<Guid>("EscrowTransactionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<Guid>("FactoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FailReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("FailedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("FarmId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("FarmNetEgp")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<Guid?>("FundingLedgerEntryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Gateway")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTime?>("HeldAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<decimal>("MilestoneAmountEgp")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<string>("PaymobOrderId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("PaymobTransactionId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<decimal>("PlatformFeeEgp")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<decimal>("PlatformFeePercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<string>("RefundReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("RefundedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReleaseReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("ReleasedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<decimal>("TotalChargedEgp")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<Guid>("TransactionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("EscrowTransactionId");
+
+                    b.HasIndex("ContractId");
+
+                    b.HasIndex("IdempotencyKey");
+
+                    b.HasIndex("TransactionId");
+
+                    b.HasIndex("TransactionId", "Status");
+
+                    b.ToTable("EscrowTransactions", (string)null);
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.Factory", b =>
                 {
                     b.Property<Guid>("FactoryId")
@@ -582,16 +786,36 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<string>("AccountHolderName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
                     b.Property<decimal>("AverageRating")
                         .HasPrecision(3, 2)
                         .HasColumnType("decimal(3,2)");
 
+                    b.Property<string>("BankAccountNumber")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("BankName")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("Governorate")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Iban")
+                        .HasMaxLength(34)
+                        .HasColumnType("nvarchar(34)");
 
                     b.Property<bool>("IsVerified")
                         .HasColumnType("bit");
@@ -666,6 +890,47 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.FarmCrop", b =>
+                {
+                    b.Property<Guid>("FarmId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CropTypeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AvailableFrom")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("AvailableQuantityTons")
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)");
+
+                    b.Property<DateTime?>("AvailableTo")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsPublished")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<decimal?>("MinPricePerTon")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.HasKey("FarmId", "CropTypeId");
+
+                    b.HasIndex("CropTypeId");
+
+                    b.ToTable("FarmCrop", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_FarmCrop_AvailabilityDates", "[AvailableTo] IS NULL OR [AvailableFrom] IS NULL OR [AvailableTo] >= [AvailableFrom]");
+
+                            t.HasCheckConstraint("CK_FarmCrop_AvailableQuantityNonNegative", "[AvailableQuantityTons] IS NULL OR [AvailableQuantityTons] >= 0");
+
+                            t.HasCheckConstraint("CK_FarmCrop_MinPriceNonNegative", "[MinPricePerTon] IS NULL OR [MinPricePerTon] >= 0");
+                        });
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.FarmDocument", b =>
                 {
                     b.Property<Guid>("FarmDocumentId")
@@ -708,17 +973,81 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("FarmDocument", (string)null);
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.FarmImage", b =>
+                {
+                    b.Property<Guid>("FarmImageId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("FarmId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<string>("FileUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("PublicId")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("FarmImageId");
+
+                    b.HasIndex("FarmId", "SortOrder");
+
+                    b.ToTable("FarmImage", (string)null);
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.FarmMatch", b =>
                 {
                     b.Property<Guid>("MatchId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<bool>("CounterAccepted")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime?>("CounterDeliveryDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CounterNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<decimal?>("CounterPricePerTon")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<decimal?>("CounterQuantityTons")
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)");
+
+                    b.Property<DateTime?>("CounteredAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("EligibilitySnapshotJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<Guid>("FarmId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsExcludedByFactory")
+                        .HasColumnType("bit");
 
                     b.Property<decimal?>("MatchScore")
                         .HasPrecision(5, 2)
@@ -748,6 +1077,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_FarmMatch_RequestId_FarmId");
 
+                    b.HasIndex("RequestId", "IsExcludedByFactory")
+                        .HasDatabaseName("IX_FarmMatch_RequestId_Excluded");
+
                     b.ToTable("FarmMatch", (string)null);
                 });
 
@@ -757,14 +1089,44 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<decimal?>("AcceptedQuantityTons")
+                        .HasPrecision(18, 3)
+                        .HasColumnType("decimal(18,3)");
+
+                    b.Property<string>("Carrier")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
                     b.Property<Guid>("ContractId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("DeliveryPoint")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<decimal>("DiscountPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)");
+
+                    b.Property<string>("FreightPayer")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
                     b.Property<DateTime?>("FulfilledAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("GateRejectNotes")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("GateRejectReason")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<DateTime?>("PlannedShipDate")
                         .HasColumnType("datetime2");
@@ -779,16 +1141,51 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("ReceivedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("RejectedAtGateAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReturnFreightBearer")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
                     b.Property<DateTime?>("ShippedAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<string>("ShippedNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<bool?>("SpecsMet")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("SpecsOutcomeNotes")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)");
 
+                    b.Property<string>("TrackingNumber")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("TransitRisk")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
                     b.Property<DateTime?>("VoidedAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<decimal?>("WeighedQuantityTons")
+                        .HasPrecision(18, 3)
+                        .HasColumnType("decimal(18,3)");
+
+                    b.Property<string>("WeighbridgeTicketUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
 
                     b.HasKey("FulfillmentId");
 
@@ -1087,8 +1484,18 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("DeliveryDate")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("DeliveryPoint")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
                     b.Property<Guid>("FactoryId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FreightPayer")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
 
                     b.Property<string>("IdempotencyKey")
                         .HasMaxLength(128)
@@ -1106,6 +1513,11 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .HasColumnType("decimal(10,2)");
 
                     b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("TransitRisk")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
@@ -1137,6 +1549,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("DueDate")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("Label")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1152,6 +1567,21 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<decimal>("Percent")
                         .HasPrecision(5, 2)
                         .HasColumnType("decimal(5,2)");
+
+                    b.Property<string>("ReceiptFileName")
+                        .HasMaxLength(260)
+                        .HasColumnType("nvarchar(260)");
+
+                    b.Property<string>("ReceiptPublicId")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("ReceiptUploadedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ReceiptUrl")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
 
                     b.Property<DateTime?>("ReceivedAt")
                         .HasColumnType("datetime2");
@@ -1213,6 +1643,215 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.HasIndex("TransactionId");
 
                     b.ToTable("TransactionEvents", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.Wallet", b =>
+                {
+                    b.Property<Guid>("WalletId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AvailableBalanceEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("HeldBalanceEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("OwnerType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("WalletId");
+
+                    b.HasIndex("OwnerType", "OwnerId")
+                        .IsUnique();
+
+                    b.ToTable("Wallets", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.WalletLedgerEntry", b =>
+                {
+                    b.Property<Guid>("LedgerEntryId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AmountEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<decimal>("AvailableAfterEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("nvarchar(8)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("EntryType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<decimal>("HeldAfterEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<Guid?>("ReferenceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReferenceType")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("WalletId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("LedgerEntryId");
+
+                    b.HasIndex("WalletId");
+
+                    b.ToTable("WalletLedgerEntries", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.WalletTopUp", b =>
+                {
+                    b.Property<Guid>("TopUpId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AmountEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<string>("CheckoutUrl")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("ClientSecret")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime?>("PaidAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PaymobIntentionId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("PaymobOrderId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("PaymobTransactionId")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("WalletId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("TopUpId");
+
+                    b.HasIndex("IdempotencyKey");
+
+                    b.HasIndex("PaymobTransactionId");
+
+                    b.HasIndex("WalletId");
+
+                    b.ToTable("WalletTopUps", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.WalletWithdrawal", b =>
+                {
+                    b.Property<Guid>("WithdrawalId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AmountEgp")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("decimal(14,2)");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DestinationSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("FailReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("Method")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("WalletId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("WithdrawalId");
+
+                    b.HasIndex("WalletId");
+
+                    b.ToTable("WalletWithdrawals", (string)null);
                 });
 
             modelBuilder.Entity("NileChain.Domain.Identity.ApplicationRole", b =>
@@ -1339,21 +1978,6 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("CropTypeFarm", b =>
-                {
-                    b.HasOne("NileChain.Domain.Entities.CropType", null)
-                        .WithMany()
-                        .HasForeignKey("CropTypesCropTypeId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("NileChain.Domain.Entities.Farm", null)
-                        .WithMany()
-                        .HasForeignKey("FarmsFarmId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
                 {
                     b.HasOne("NileChain.Domain.Identity.ApplicationRole", null)
@@ -1436,6 +2060,28 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("FarmMatch");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractAttachment", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany("Attachments")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractIntegrityAnchor", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany("IntegrityAnchors")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.CropRequest", b =>
@@ -1526,6 +2172,25 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Dispute");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.EscrowTransaction", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany()
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NileChain.Domain.Entities.Transaction", "Transaction")
+                        .WithMany()
+                        .HasForeignKey("TransactionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+
+                    b.Navigation("Transaction");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.Factory", b =>
                 {
                     b.HasOne("NileChain.Domain.Identity.ApplicationUser", "User")
@@ -1567,10 +2232,40 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Farm");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.FarmCrop", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.CropType", "CropType")
+                        .WithMany("FarmCrops")
+                        .HasForeignKey("CropTypeId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("NileChain.Domain.Entities.Farm", "Farm")
+                        .WithMany("FarmCrops")
+                        .HasForeignKey("FarmId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("CropType");
+
+                    b.Navigation("Farm");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.FarmDocument", b =>
                 {
                     b.HasOne("NileChain.Domain.Entities.Farm", "Farm")
                         .WithMany("FarmDocuments")
+                        .HasForeignKey("FarmId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Farm");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.FarmImage", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Farm", "Farm")
+                        .WithMany("FarmImages")
                         .HasForeignKey("FarmId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -1785,6 +2480,39 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Transaction");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.WalletLedgerEntry", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Wallet", "Wallet")
+                        .WithMany("Ledger")
+                        .HasForeignKey("WalletId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Wallet");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.WalletTopUp", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Wallet", "Wallet")
+                        .WithMany()
+                        .HasForeignKey("WalletId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Wallet");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.WalletWithdrawal", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Wallet", "Wallet")
+                        .WithMany()
+                        .HasForeignKey("WalletId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Wallet");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.Certification", b =>
                 {
                     b.Navigation("FarmCertifications");
@@ -1792,9 +2520,13 @@ namespace NileChain.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NileChain.Domain.Entities.Contract", b =>
                 {
+                    b.Navigation("Attachments");
+
                     b.Navigation("Disputes");
 
                     b.Navigation("Fulfillment");
+
+                    b.Navigation("IntegrityAnchors");
 
                     b.Navigation("Reviews");
 
@@ -1803,6 +2535,8 @@ namespace NileChain.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NileChain.Domain.Entities.CropType", b =>
                 {
+                    b.Navigation("FarmCrops");
+
                     b.Navigation("MarketPrices");
 
                     b.Navigation("SupplyRequests");
@@ -1824,7 +2558,11 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                 {
                     b.Navigation("FarmCertifications");
 
+                    b.Navigation("FarmCrops");
+
                     b.Navigation("FarmDocuments");
+
+                    b.Navigation("FarmImages");
 
                     b.Navigation("FarmMatches");
 
@@ -1853,6 +2591,11 @@ namespace NileChain.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("NileChain.Domain.Entities.Transaction", b =>
                 {
                     b.Navigation("Events");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.Wallet", b =>
+                {
+                    b.Navigation("Ledger");
                 });
 
             modelBuilder.Entity("NileChain.Domain.Identity.ApplicationUser", b =>

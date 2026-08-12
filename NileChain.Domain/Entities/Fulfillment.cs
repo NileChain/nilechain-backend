@@ -23,6 +23,37 @@ public class Fulfillment
     public DateTime? VoidedAt { get; set; }
 
     public string? QualityNotes { get; set; }
+
+    public string? Carrier { get; set; }
+    public string? TrackingNumber { get; set; }
+    public string? ShippedNotes { get; set; }
+
+    /// <summary>Quantity accepted after QC (tons). Null when not recorded.</summary>
+    public decimal? AcceptedQuantityTons { get; set; }
+
+    /// <summary>0–100 discount applied to first open payment milestone after QC.</summary>
+    public decimal DiscountPercent { get; set; }
+
+    /// <summary>Whether received goods met the supply-request structured quality specs.</summary>
+    public bool? SpecsMet { get; set; }
+
+    /// <summary>Notes comparing delivery against requested quality specs.</summary>
+    public string? SpecsOutcomeNotes { get; set; }
+
+    /// <summary>Copied from the supply request at full sign. Immutable after create.</summary>
+    public DeliveryPoint DeliveryPoint { get; set; } = DeliveryPoint.FactoryGate;
+    public DealParty FreightPayer { get; set; } = DealParty.Farm;
+    public DealParty TransitRisk { get; set; } = DealParty.Farm;
+
+    /// <summary>Weighbridge tons recorded at receive. Payable tons = min(this, contracted).</summary>
+    public decimal? WeighedQuantityTons { get; set; }
+    public string? WeighbridgeTicketUrl { get; set; }
+
+    public DateTime? RejectedAtGateAt { get; set; }
+    public GateRejectReason? GateRejectReason { get; set; }
+    public string? GateRejectNotes { get; set; }
+    public DealParty? ReturnFreightBearer { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public Contract Contract { get; set; } = default!;

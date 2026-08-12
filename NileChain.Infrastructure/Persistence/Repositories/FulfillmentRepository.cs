@@ -44,7 +44,19 @@ public class FulfillmentRepository : IFulfillmentRepository
         FulfillmentStatus to,
         DateTime utcNow,
         string? qualityNotes = null,
-        bool requireNoActiveDispute = false)
+        bool requireNoActiveDispute = false,
+        string? carrier = null,
+        string? trackingNumber = null,
+        string? shippedNotes = null,
+        decimal? acceptedQuantityTons = null,
+        decimal? discountPercent = null,
+        bool? specsMet = null,
+        string? specsOutcomeNotes = null,
+        decimal? weighedQuantityTons = null,
+        string? weighbridgeTicketUrl = null,
+        GateRejectReason? gateRejectReason = null,
+        string? gateRejectNotes = null,
+        DealParty? returnFreightBearer = null)
     {
         var query = _db.Fulfillments.Where(f =>
             f.FulfillmentId == fulfillmentId && f.Status == expectedFrom);
@@ -60,16 +72,32 @@ public class FulfillmentRepository : IFulfillmentRepository
         {
             FulfillmentStatus.Shipped => await query.ExecuteUpdateAsync(s => s
                 .SetProperty(f => f.Status, FulfillmentStatus.Shipped)
-                .SetProperty(f => f.ShippedAt, utcNow)),
+                .SetProperty(f => f.ShippedAt, utcNow)
+                .SetProperty(f => f.Carrier, carrier)
+                .SetProperty(f => f.TrackingNumber, trackingNumber)
+                .SetProperty(f => f.ShippedNotes, shippedNotes)),
 
             FulfillmentStatus.Received => await query.ExecuteUpdateAsync(s => s
                 .SetProperty(f => f.Status, FulfillmentStatus.Received)
-                .SetProperty(f => f.ReceivedAt, utcNow)),
+                .SetProperty(f => f.ReceivedAt, utcNow)
+                .SetProperty(f => f.WeighedQuantityTons, weighedQuantityTons)
+                .SetProperty(f => f.WeighbridgeTicketUrl, weighbridgeTicketUrl)),
+
+            FulfillmentStatus.RejectedAtGate => await query.ExecuteUpdateAsync(s => s
+                .SetProperty(f => f.Status, FulfillmentStatus.RejectedAtGate)
+                .SetProperty(f => f.RejectedAtGateAt, utcNow)
+                .SetProperty(f => f.GateRejectReason, gateRejectReason)
+                .SetProperty(f => f.GateRejectNotes, gateRejectNotes)
+                .SetProperty(f => f.ReturnFreightBearer, returnFreightBearer)),
 
             FulfillmentStatus.QualityChecked => await query.ExecuteUpdateAsync(s => s
                 .SetProperty(f => f.Status, FulfillmentStatus.QualityChecked)
                 .SetProperty(f => f.QualityCheckedAt, utcNow)
-                .SetProperty(f => f.QualityNotes, qualityNotes)),
+                .SetProperty(f => f.QualityNotes, qualityNotes)
+                .SetProperty(f => f.AcceptedQuantityTons, acceptedQuantityTons)
+                .SetProperty(f => f.DiscountPercent, discountPercent ?? 0m)
+                .SetProperty(f => f.SpecsMet, specsMet)
+                .SetProperty(f => f.SpecsOutcomeNotes, specsOutcomeNotes)),
 
             FulfillmentStatus.Fulfilled => await query.ExecuteUpdateAsync(s => s
                 .SetProperty(f => f.Status, FulfillmentStatus.Fulfilled)

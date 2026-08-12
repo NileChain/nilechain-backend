@@ -230,6 +230,9 @@ public class Round2OpsRemediationTests
             new FakeFulfillmentService(),
             new FakePaymentMilestoneService(),
             new FakeDisputeService(),
+            new NoopWalletService(),
+            new NileChain.Tests.TestDoubles.NoopEscrowPayments(),
+            new NoopIntegrityService(),
             uow);
 
         var request = new CreateSupplyRequestRequest
@@ -266,7 +269,12 @@ public class Round2OpsRemediationTests
     private sealed class FakeFulfillmentService : NileChain.Application.Interfaces.IFulfillmentService
     {
         public Task EnsureCreatedForSignedContractAsync(
-            Guid contractId, Guid actorUserId, DateTime? plannedShipDate = null) =>
+            Guid contractId,
+            Guid actorUserId,
+            DateTime? plannedShipDate = null,
+            NileChain.Domain.Enums.DeliveryPoint? deliveryPoint = null,
+            NileChain.Domain.Enums.DealParty? freightPayer = null,
+            NileChain.Domain.Enums.DealParty? transitRisk = null) =>
             Task.CompletedTask;
 
         public Task VoidForContractAsync(Guid contractId, Guid actorUserId, string reason) =>
@@ -277,15 +285,31 @@ public class Round2OpsRemediationTests
             throw new NotImplementedException();
 
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Fulfillment.FulfillmentDto>>
-            MarkShippedAsync(Guid farmUserId, Guid contractId) =>
+            MarkShippedAsync(
+                Guid farmUserId,
+                Guid contractId,
+                NileChain.Application.Dtos.Fulfillment.ShipFulfillmentRequest? request = null) =>
             throw new NotImplementedException();
 
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Fulfillment.FulfillmentDto>>
-            MarkReceivedAsync(Guid factoryUserId, Guid contractId) =>
+            MarkReceivedAsync(
+                Guid factoryUserId,
+                Guid contractId,
+                NileChain.Application.Dtos.Fulfillment.ReceiveFulfillmentRequest? request = null) =>
             throw new NotImplementedException();
 
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Fulfillment.FulfillmentDto>>
-            MarkQualityCheckedAsync(Guid factoryUserId, Guid contractId, string? notes) =>
+            MarkRejectedAtGateAsync(
+                Guid factoryUserId,
+                Guid contractId,
+                NileChain.Application.Dtos.Fulfillment.RejectAtGateRequest request) =>
+            throw new NotImplementedException();
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Fulfillment.FulfillmentDto>>
+            MarkQualityCheckedAsync(
+                Guid factoryUserId,
+                Guid contractId,
+                NileChain.Application.Dtos.Fulfillment.QualityCheckRequest? request = null) =>
             throw new NotImplementedException();
 
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Fulfillment.FulfillmentDto>>
@@ -313,7 +337,11 @@ public class Round2OpsRemediationTests
             throw new NotImplementedException();
 
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Payment.PaymentMilestoneScheduleDto>>
-            MarkPaidAsync(Guid factoryUserId, Guid contractId, Guid transactionId) =>
+            MarkPaidAsync(
+                Guid factoryUserId,
+                Guid contractId,
+                Guid transactionId,
+                Microsoft.AspNetCore.Http.IFormFile? receipt = null) =>
             throw new NotImplementedException();
 
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Payment.PaymentMilestoneScheduleDto>>
@@ -361,6 +389,111 @@ public class Round2OpsRemediationTests
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Dispute.DisputeDto>>
             RejectAsync(Guid adminUserId, Guid disputeId, string adminNote) =>
             throw new NotImplementedException();
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Dispute.DisputeListDto>>
+            ListMineAsync(Guid userId, bool asFarm, string? status, int page, int pageSize) =>
+            throw new NotImplementedException();
+    }
+
+    private sealed class NoopIntegrityService : NileChain.Application.Interfaces.IContractIntegrityService
+    {
+        public Task AnchorIfFullySignedAsync(NileChain.Domain.Entities.Contract contract) =>
+            Task.CompletedTask;
+
+        public Task SupersedeActiveAsync(Guid contractId) => Task.CompletedTask;
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Integrity.ContractIntegrityDto>>
+            GetActiveForContractAsync(Guid contractId) =>
+            Task.FromResult(
+                NileChain.Application.Common.Result<NileChain.Application.Dtos.Integrity.ContractIntegrityDto>
+                    .Failure(NileChain.Application.Errors.IntegrityErrors.NotAnchored));
+
+        public Task<NileChain.Application.Dtos.Integrity.ContractIntegrityVerifyDto> VerifyByHashAsync(
+            string contentHash) =>
+            Task.FromResult(new NileChain.Application.Dtos.Integrity.ContractIntegrityVerifyDto
+            {
+                Outcome = "NotFound",
+                ContentHash = contentHash
+            });
+    }
+
+    private sealed class NoopWalletService : NileChain.Application.Interfaces.IWalletService
+    {
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>> GetMineAsync(
+            Guid userId, bool asFarm) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.NotFound));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletTopUpSessionDto>> StartTopUpAsync(
+            Guid userId, bool asFarm, decimal amountEgp, string? idempotencyKey, string? returnUrl) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletTopUpSessionDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.TopUpFailed));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>> CompleteSimulatorTopUpAsync(
+            Guid userId, bool asFarm, Guid topUpId) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.TopUpFailed));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>> ApplyPaymobTopUpSuccessAsync(
+            string specialReference, string? paymobTransactionId, string? paymobOrderId, bool success) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.TopUpFailed));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>> ConfirmPaymobReturnAsync(
+            Guid userId,
+            bool asFarm,
+            IReadOnlyDictionary<string, string?> query,
+            string? hmac) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.TopUpFailed));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletWithdrawalDto>> RequestWithdrawalAsync(
+            Guid userId, bool asFarm, decimal amountEgp, string method, string? destinationSummary) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletWithdrawalDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.WithdrawFailed));
+
+        public Task<NileChain.Application.Common.Result<Guid>> HoldForEscrowAsync(
+            Guid factoryId, decimal amountEgp, Guid escrowTransactionId, string description) =>
+            Task.FromResult(NileChain.Application.Common.Result<Guid>.Failure(
+                NileChain.Application.Errors.WalletErrors.InsufficientBalance));
+
+        public Task<NileChain.Application.Common.Result> EnsureFactoryAvailableAsync(
+            Guid factoryId, decimal amountEgp) =>
+            Task.FromResult(NileChain.Application.Common.Result.Success());
+
+        public Task<NileChain.Application.Common.Result<Guid>> HoldDealFundsAsync(
+            Guid factoryId, Guid contractId, decimal amountEgp, string description) =>
+            Task.FromResult(NileChain.Application.Common.Result<Guid>.Failure(
+                NileChain.Application.Errors.WalletErrors.InsufficientBalance));
+
+        public Task<NileChain.Application.Common.Result> ReleaseEscrowToFarmAsync(
+            Guid factoryId, Guid farmId, decimal totalHeldEgp, decimal farmNetEgp, Guid escrowTransactionId) =>
+            Task.FromResult(NileChain.Application.Common.Result.Failure(
+                NileChain.Application.Errors.WalletErrors.InsufficientBalance));
+
+        public Task<NileChain.Application.Common.Result> RefundEscrowHoldAsync(
+            Guid factoryId, decimal totalHeldEgp, Guid escrowTransactionId, string reason) =>
+            Task.FromResult(NileChain.Application.Common.Result.Failure(
+                NileChain.Application.Errors.WalletErrors.InsufficientBalance));
+
+        public decimal GetDealHoldAmountEgp(decimal dealTotalEgp) => dealTotalEgp;
+
+        public Task<NileChain.Application.Common.Result> RefundHeldAmountAsync(
+            Guid factoryId, decimal amountEgp, string referenceType, Guid referenceId, string reason) =>
+            Task.FromResult(NileChain.Application.Common.Result.Success());
+
+        public Task<NileChain.Application.Common.Result> SplitEscrowHoldAsync(
+            Guid factoryId,
+            Guid farmId,
+            decimal totalHeldEgp,
+            decimal farmShareEgp,
+            Guid escrowTransactionId,
+            string reason) =>
+            Task.FromResult(NileChain.Application.Common.Result.Success());
+
+        public Task<int> ExpireStaleTopUpsAsync(
+            DateTime cutoffUtc, CancellationToken cancellationToken = default) =>
+            Task.FromResult(0);
     }
 
     private static string FindBackendRoot()

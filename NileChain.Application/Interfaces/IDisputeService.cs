@@ -40,4 +40,11 @@ public interface IDisputeService
         string outcomeFavor);
 
     Task<Result<DisputeDto>> RejectAsync(Guid adminUserId, Guid disputeId, string adminNote);
+
+    Task<Result<DisputeListDto>> ListMineAsync(
+        Guid userId,
+        bool asFarm,
+        string? status,
+        int page,
+        int pageSize);
 }

@@ -87,7 +87,9 @@ public sealed class ContractMatchExpiryHostedService : BackgroundService
 
         var proposed = await db.FarmMatches
             .Include(m => m.Farm)
-            .Where(m => m.Status == FarmMatchStatus.Proposed && m.CreatedAt <= cutoff)
+            .Where(m =>
+                (m.Status == FarmMatchStatus.Proposed || m.Status == FarmMatchStatus.Countered)
+                && m.CreatedAt <= cutoff)
             .ToListAsync(cancellationToken);
 
         var toExpire = ContractMatchExpiry.SelectExpiredProposedMatches(
@@ -174,7 +176,19 @@ public sealed class ContractMatchExpiryHostedService : BackgroundService
             }
         }
 
-        if (toExpire.Count > 0 || toCancel.Count > 0)
+        var topUpCutoff = utcNow.AddHours(-Math.Max(1, 24));
+        var staleTopUps = await db.WalletTopUps
+            .Where(t =>
+                (t.Status == WalletTopUpStatus.Created || t.Status == WalletTopUpStatus.Pending)
+                && t.CreatedAt <= topUpCutoff)
+            .ToListAsync(cancellationToken);
+        foreach (var topUp in staleTopUps)
+        {
+            topUp.Status = WalletTopUpStatus.Expired;
+            topUp.UpdatedAt = utcNow;
+        }
+
+        if (toExpire.Count > 0 || toCancel.Count > 0 || staleTopUps.Count > 0)
             await db.SaveChangesAsync(cancellationToken);
 
         return (toExpire.Count, toCancel.Count);

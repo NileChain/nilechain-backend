@@ -13,8 +13,15 @@ public interface IFarmService
     Task<Result<FarmDocumentDto>> AddDocumentAsync(Guid userId, IFormFile file);
     Task<Result<List<FarmDocumentDto>>> GetDocumentsAsync(Guid userId);
     Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId);
-    Task<Result> AddCropAsync(Guid userId, Guid cropTypeId);
+    Task<Result> AddCropAsync(Guid userId, AddCropRequest request);
+    Task<Result> UpdateCropAsync(Guid userId, Guid cropTypeId, UpdateFarmCropRequest request);
     Task<Result> DeleteCropAsync(Guid userId, Guid cropTypeId);
+    Task<Result<FarmImageDto>> AddImageAsync(Guid userId, IFormFile file);
+    Task<Result> DeleteImageAsync(Guid userId, Guid imageId);
+    Task<Result> CounterOfferAsync(Guid userId, Guid matchId, CounterOfferRequest request);
+    Task<Result<List<FarmCertificationDto>>> GetCertificationsAsync(Guid userId);
+    Task<Result> AddCertificationAsync(Guid userId, AddFarmCertificationRequest request);
+    Task<Result> DeleteCertificationAsync(Guid userId, Guid certificationId);
     Task<Result<FarmMatchesListResponse>> GetMatchesAsync(
         Guid userId,
         string? status,
@@ -34,6 +41,7 @@ public interface IFarmService
     Task<Result<List<ConversationDto>>> GetConversationsAsync(Guid userId);
     Task<Result<List<MessageDto>>> GetMessagesAsync(Guid userId, Guid matchId);
     Task<Result> SendMessageAsync(Guid userId, Guid matchId, string content);
+    Task<Result<FactoryPublicProfileDto>> GetMatchedFactoryPublicProfileAsync(Guid userId, Guid factoryId);
     Task<Result<List<FarmNotificationDto>>> GetNotificationsAsync(Guid userId);
     Task<Result> MarkNotificationAsReadAsync(Guid userId, Guid notificationId);
 }

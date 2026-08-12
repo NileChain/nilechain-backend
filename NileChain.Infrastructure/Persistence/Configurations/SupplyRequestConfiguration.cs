@@ -18,6 +18,19 @@ public class SupplyRequestConfiguration : IEntityTypeConfiguration<SupplyRequest
             .HasConversion<string>()
             .HasMaxLength(20);
 
+        builder.Property(r => r.DeliveryPoint)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+        builder.Property(r => r.FreightPayer)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+        builder.Property(r => r.TransitRisk)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+
         builder.Property(r => r.IdempotencyKey)
             .HasMaxLength(128);
 

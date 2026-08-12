@@ -5,6 +5,8 @@ using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Sbg;
 using NileChain.Application.Common;
+using NileChain.Domain.Common;
+using NileChain.Domain.Enums;
 using System.Text;
 
 namespace NileChain.AI.Agents;
@@ -58,7 +60,10 @@ public class ContractAgent
                 pricePerTon: request.PricePerTon,
                 deliveryDate: request.DeliveryDate.ToString("dd MMMM yyyy"),
                 qualitySpecs: request.QualitySpecs,
-                ragContext: ragContext);
+                ragContext: ragContext,
+                deliveryPointArabic: PointArabic(request.DeliveryPoint),
+                freightPayerArabic: PartyArabic(request.FreightPayer),
+                transitRiskArabic: PartyArabic(request.TransitRisk));
 
             Exception? lastFailure = null;
             foreach (var providerKey in chain.Count > 0
@@ -121,13 +126,33 @@ public class ContractAgent
         sb.AppendLine($"السعر: {request.PricePerTon:0.##} جنيه/طن");
         sb.AppendLine($"الإجمالي: {total:0.##} جنيه مصري");
         sb.AppendLine($"تاريخ التسليم: {request.DeliveryDate:dd MMMM yyyy}");
+        sb.AppendLine($"نقطة التسليم: {PointArabic(request.DeliveryPoint)}");
+        sb.AppendLine($"أجرة النقل يتحملها: {PartyArabic(request.FreightPayer)}");
+        sb.AppendLine($"مخاطر النقل يتحملها: {PartyArabic(request.TransitRisk)}");
         sb.AppendLine($"مواصفات الجودة: {request.QualitySpecs}");
         sb.AppendLine();
         sb.AppendLine("شروط الدفع: 30% مقدم، 70% عند الاستلام.");
+        sb.AppendLine("رفض الحمولة عند بوابة المصنع قبل الاستلام يعيد العربات حسب من يملك النقل ويعيد أي مبلغ محجوز للمشتري.");
         sb.AppendLine("فض النزاعات: محاكم القاهرة الاقتصادية.");
         sb.AppendLine();
         sb.AppendLine("توقيع المورد: __________");
         sb.AppendLine("توقيع المشتري: __________");
         return sb.ToString();
+    }
+
+    private static string PointArabic(string? raw)
+    {
+        DeliveryTermsPolicy.TryParsePoint(raw, out var point);
+        if (string.IsNullOrWhiteSpace(raw))
+            point = DeliveryPoint.FactoryGate;
+        return DeliveryTermsPolicy.ArabicPoint(point);
+    }
+
+    private static string PartyArabic(string? raw)
+    {
+        DeliveryTermsPolicy.TryParseParty(raw, out var party);
+        if (string.IsNullOrWhiteSpace(raw))
+            party = DealParty.Farm;
+        return DeliveryTermsPolicy.ArabicParty(party);
     }
 }

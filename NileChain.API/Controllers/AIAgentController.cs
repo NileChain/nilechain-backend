@@ -23,6 +23,7 @@ public class AIAgentController : ControllerBase
     private readonly NileChain.Application.Interfaces.IFulfillmentService _fulfillmentService;
     private readonly NileChain.Application.Interfaces.IPaymentMilestoneService _paymentMilestoneService;
     private readonly NileChain.Application.Interfaces.IDisputeService _disputeService;
+    private readonly NileChain.Application.Interfaces.IContractIntegrityService _integrity;
 
     public AIAgentController(
         AIOrchestrationService aiService,
@@ -30,7 +31,8 @@ public class AIAgentController : ControllerBase
         ILogger<AIAgentController> logger,
         NileChain.Application.Interfaces.IFulfillmentService fulfillmentService,
         NileChain.Application.Interfaces.IPaymentMilestoneService paymentMilestoneService,
-        NileChain.Application.Interfaces.IDisputeService disputeService)
+        NileChain.Application.Interfaces.IDisputeService disputeService,
+        NileChain.Application.Interfaces.IContractIntegrityService integrity)
     {
         _aiService = aiService;
         _db = db;
@@ -38,6 +40,7 @@ public class AIAgentController : ControllerBase
         _fulfillmentService = fulfillmentService;
         _paymentMilestoneService = paymentMilestoneService;
         _disputeService = disputeService;
+        _integrity = integrity;
     }
 
     [HttpPost("run/{requestId:guid}")]
@@ -254,6 +257,7 @@ public class AIAgentController : ControllerBase
                             });
                         }
 
+                        await _integrity.SupersedeActiveAsync(match.Contract.ContractId);
                         notify = true;
                         voidFulfillment = true;
                     }

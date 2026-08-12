@@ -5,5 +5,6 @@ public enum FarmMatchStatus
     Proposed,
     Accepted,
     Rejected,
-    Expired
+    Expired,
+    Countered
 }

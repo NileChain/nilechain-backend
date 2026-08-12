@@ -47,19 +47,22 @@ public sealed class ProactiveMonitorAgent
     private readonly IConfiguration _configuration;
     private readonly NileChainDbContext _db;
     private readonly ILogger<ProactiveMonitorAgent> _logger;
+    private readonly NileChain.AI.Weather.IWeatherRiskClient _weather;
 
     public ProactiveMonitorAgent(
         OpenAiKernelProvider kernelProvider,
         SbgStudentChatClient sbgClient,
         IConfiguration configuration,
         NileChainDbContext db,
-        ILogger<ProactiveMonitorAgent> logger)
+        ILogger<ProactiveMonitorAgent> logger,
+        NileChain.AI.Weather.IWeatherRiskClient weather)
     {
         _kernelProvider = kernelProvider;
         _sbgClient = sbgClient;
         _configuration = configuration;
         _db = db;
         _logger = logger;
+        _weather = weather;
     }
 
     public async Task<MonitoringRunResult> RunAsync(CancellationToken cancellationToken = default)
@@ -92,7 +95,7 @@ public sealed class ProactiveMonitorAgent
     {
         var sw = Stopwatch.StartNew();
         var state = new MonitoringRunState();
-        var tools = new MonitoringToolsPlugin(_db, _logger, state);
+        var tools = new MonitoringToolsPlugin(_db, _logger, state, _weather);
         var kernel = CreatePerRunKernel(tools);
         var chat = kernel.GetRequiredService<IChatCompletionService>();
 
@@ -190,7 +193,7 @@ public sealed class ProactiveMonitorAgent
     {
         var sw = Stopwatch.StartNew();
         var state = new MonitoringRunState();
-        var tools = new MonitoringToolsPlugin(_db, _logger, state);
+        var tools = new MonitoringToolsPlugin(_db, _logger, state, _weather);
 
         var contractsJson = await tools.GetActiveContracts();
         using var doc = JsonDocument.Parse(contractsJson);

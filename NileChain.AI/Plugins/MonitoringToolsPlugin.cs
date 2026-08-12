@@ -1,12 +1,11 @@
 using System.ComponentModel;
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using NileChain.AI.Orchestration;
+using NileChain.AI.Weather;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Infrastructure.Persistence;
@@ -30,17 +29,20 @@ public sealed class MonitoringToolsPlugin
     private readonly NileChainDbContext _db;
     private readonly ILogger _logger;
     private readonly MonitoringRunState _state;
+    private readonly IWeatherRiskClient _weather;
 
     public MonitoringRunState State => _state;
 
     public MonitoringToolsPlugin(
         NileChainDbContext db,
         ILogger logger,
-        MonitoringRunState state)
+        MonitoringRunState state,
+        IWeatherRiskClient weather)
     {
         _db = db;
         _logger = logger;
         _state = state;
+        _weather = weather;
     }
 
     [KernelFunction("GetActiveContracts")]
@@ -71,7 +73,11 @@ public sealed class MonitoringToolsPlugin
                     DeliveryDate = c.FarmMatch.SupplyRequest.DeliveryDate,
                     Governorate = c.FarmMatch.SupplyRequest.Factory.Governorate
                                   ?? c.FarmMatch.Farm.Governorate
-                                  ?? "Unknown"
+                                  ?? "Unknown",
+                    FarmLatitude = c.FarmMatch.Farm.Latitude,
+                    FarmLongitude = c.FarmMatch.Farm.Longitude,
+                    FactoryLatitude = c.FarmMatch.SupplyRequest.Factory.Latitude,
+                    FactoryLongitude = c.FarmMatch.SupplyRequest.Factory.Longitude
                 })
                 .ToListAsync();
 
@@ -92,7 +98,9 @@ public sealed class MonitoringToolsPlugin
                     cropType = r.CropType,
                     lockedPricePerTon = r.LockedPricePerTon,
                     deliveryDate = r.DeliveryDate,
-                    governorate = r.Governorate
+                    governorate = r.Governorate,
+                    latitude = r.FarmLatitude ?? r.FactoryLatitude,
+                    longitude = r.FarmLongitude ?? r.FactoryLongitude
                 })
             }, JsonOptions);
         }
@@ -110,34 +118,33 @@ public sealed class MonitoringToolsPlugin
         "Use when deliveryDate is within the next 14 days. " +
         "Returns riskLevel (Low|Medium|High) and a short reason. " +
         "Only High risk should trigger a WeatherRisk alert.")]
-    public Task<string> CheckWeatherRisk(
+    public async Task<string> CheckWeatherRisk(
         [Description("Egyptian governorate name for the delivery / farm area")] string governorate,
         [Description("Contract delivery date (ISO-8601)")] DateTime deliveryDate)
     {
         var args = $"governorate={governorate}; deliveryDate={deliveryDate:yyyy-MM-dd}";
         try
         {
-            // PLACEHOLDER: simulated weather assessment until a real weather API is integrated.
-            // Deterministic pseudo-random from governorate + date so re-runs are stable for demos.
-            var (level, reason) = SimulateWeatherRisk(governorate, deliveryDate);
-
-            var summary = $"riskLevel={level}; reason={reason}";
+            var assessed = await _weather.AssessAsync(governorate, deliveryDate, null, null);
+            var summary = $"riskLevel={assessed.RiskLevel}; live={assessed.FromLiveFeed}; reason={assessed.Reason}";
             _state.RecordTrail("CheckWeatherRisk", args, summary);
             _logger.LogInformation("Tool CheckWeatherRisk | {Args} | {Summary}", args, summary);
 
-            return Task.FromResult(JsonSerializer.Serialize(new
+            return JsonSerializer.Serialize(new
             {
                 governorate,
                 deliveryDate = deliveryDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                riskLevel = level,
-                reason,
-                simulated = true
-            }, JsonOptions));
+                riskLevel = assessed.RiskLevel,
+                reason = assessed.Reason,
+                simulated = !assessed.FromLiveFeed,
+                latitude = assessed.Latitude,
+                longitude = assessed.Longitude
+            }, JsonOptions);
         }
         catch (Exception ex)
         {
             _state.RecordTrail("CheckWeatherRisk", args, $"error={ex.Message}");
-            return Task.FromResult(JsonSerializer.Serialize(new { error = ex.Message }, JsonOptions));
+            return JsonSerializer.Serialize(new { error = ex.Message }, JsonOptions);
         }
     }
 
@@ -336,28 +343,6 @@ public sealed class MonitoringToolsPlugin
             _state.RecordTrail("HasRecentAlert", args, $"error={ex.Message}");
             return JsonSerializer.Serialize(new { error = ex.Message }, JsonOptions);
         }
-    }
-
-    /// <summary>
-    /// PLACEHOLDER for a real weather API. Deterministic Low/Medium/High from governorate+date.
-    /// </summary>
-    private static (string Level, string Reason) SimulateWeatherRisk(
-        string governorate,
-        DateTime deliveryDate)
-    {
-        var key = $"{governorate?.Trim().ToLowerInvariant()}|{deliveryDate:yyyy-MM-dd}";
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
-        var bucket = hash[0] % 10;
-
-        return bucket switch
-        {
-            <= 1 => ("High",
-                "Simulated: elevated heat / storm risk in the delivery window"),
-            <= 4 => ("Medium",
-                "Simulated: moderate precipitation variability near delivery"),
-            _ => ("Low",
-                "Simulated: stable conditions expected for the delivery window")
-        };
     }
 
     private static string NormalizeAlertType(string alertType)

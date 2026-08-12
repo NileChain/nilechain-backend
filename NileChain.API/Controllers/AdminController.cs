@@ -7,6 +7,7 @@ using NileChain.Application.Dtos.Admin;
 using NileChain.Application.Dtos.Dispute;
 using NileChain.Application.Interfaces;
 using NileChain.Application.Validation;
+using System.Security.Claims;
 
 namespace NileChain.API.Controllers
 {
@@ -20,19 +21,22 @@ namespace NileChain.API.Controllers
         private readonly ILogger<AdminController> _logger;
         private readonly IFulfillmentService _fulfillmentService;
         private readonly IDisputeService _disputeService;
+        private readonly IMockEscrowPaymentService _mockEscrowPaymentService;
 
         public AdminController(
             IAdminService adminService,
             ProactiveMonitorAgent proactiveMonitor,
             ILogger<AdminController> logger,
             IFulfillmentService fulfillmentService,
-            IDisputeService disputeService)
+            IDisputeService disputeService,
+            IMockEscrowPaymentService mockEscrowPaymentService)
         {
             _adminService = adminService;
             _proactiveMonitor = proactiveMonitor;
             _logger = logger;
             _fulfillmentService = fulfillmentService;
             _disputeService = disputeService;
+            _mockEscrowPaymentService = mockEscrowPaymentService;
         }
 
         [HttpGet("fulfillments/stuck")]
@@ -41,6 +45,38 @@ namespace NileChain.API.Controllers
             [FromQuery] int pageSize = 20)
         {
             var result = await _fulfillmentService.GetStuckDeliveriesAsync(page, pageSize);
+            return result.ToActionResult();
+        }
+
+        [HttpPost("escrow/{escrowId:guid}/refund")]
+        public async Task<IActionResult> RefundEscrow(
+            Guid escrowId,
+            [FromBody] NileChain.Application.Dtos.Payment.AdminEscrowRefundRequest? body)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId is null)
+                return Unauthorized();
+
+            var result = await _mockEscrowPaymentService.AdminRefundAsync(
+                Guid.Parse(userId),
+                escrowId,
+                body?.Reason ?? "Admin demo refund");
+            return result.ToActionResult();
+        }
+
+        [HttpPost("contracts/{contractId:guid}/escrow/refund-held")]
+        public async Task<IActionResult> RefundHeldEscrowForContract(
+            Guid contractId,
+            [FromBody] NileChain.Application.Dtos.Payment.AdminEscrowRefundRequest? body)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId is null)
+                return Unauthorized();
+
+            var result = await _mockEscrowPaymentService.AdminRefundHeldForContractAsync(
+                Guid.Parse(userId),
+                contractId,
+                body?.Reason ?? "Admin refund of held escrow");
             return result.ToActionResult();
         }
 

@@ -13,9 +13,17 @@ public static class ContractMatchExpiry
         FarmMatchStatus status,
         DateTime createdAtUtc,
         DateTime utcNow,
+        int expiryDays = DefaultExpiryDays) =>
+        IsOpenMatchExpired(status, createdAtUtc, utcNow, expiryDays);
+
+    /// <summary>Proposed and Countered matches age out; Accepted/Rejected/Expired do not.</summary>
+    public static bool IsOpenMatchExpired(
+        FarmMatchStatus status,
+        DateTime createdAtUtc,
+        DateTime utcNow,
         int expiryDays = DefaultExpiryDays)
     {
-        if (status != FarmMatchStatus.Proposed)
+        if (status is not (FarmMatchStatus.Proposed or FarmMatchStatus.Countered))
             return false;
 
         var days = Math.Max(1, expiryDays);
@@ -51,7 +59,7 @@ public static class ContractMatchExpiry
         DateTime utcNow,
         int expiryDays = DefaultExpiryDays) =>
         matches
-            .Where(m => IsProposedMatchExpired(status(m), createdAtUtc(m), utcNow, expiryDays))
+            .Where(m => IsOpenMatchExpired(status(m), createdAtUtc(m), utcNow, expiryDays))
             .ToList();
 
     /// <summary>

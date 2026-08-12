@@ -7,5 +7,6 @@ public enum DisputeOutcomeFavor
 {
     None = 0,
     Farm = 1,
-    Factory = 2
+    Factory = 2,
+    Split = 3
 }

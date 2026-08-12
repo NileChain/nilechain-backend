@@ -418,7 +418,8 @@ public class OrchestratorAgent
         if (topMatches.Count == 0 && chatFailure is not null)
             throw chatFailure;
 
-        await PersistFarmMatchesAsync(request.RequestId, topMatches);
+        var superseded = await PersistFarmMatchesAsync(request.RequestId, topMatches);
+        state.LastSupersededCount = superseded;
 
         LogFullTrail(state, sw.Elapsed, finalContent);
 
@@ -438,6 +439,7 @@ public class OrchestratorAgent
             TopMatches = topMatches,
             TotalEligible = totalEligible,
             TruncatedCount = truncatedCount,
+            SupersededCount = state.LastSupersededCount,
             ComparisonReport = finalContent ?? string.Empty,
             ContractDraft = state.ContractDraft ?? string.Empty,
             PartialResult = state.PartialResult,
@@ -540,7 +542,7 @@ public class OrchestratorAgent
                 warning.Message);
         }
 
-        await PersistFarmMatchesAsync(request.RequestId, matches);
+        var superseded = await PersistFarmMatchesAsync(request.RequestId, matches);
 
         return new AgentResponse
         {
@@ -548,6 +550,7 @@ public class OrchestratorAgent
             TopMatches = matches,
             TotalEligible = search.TotalEligible,
             TruncatedCount = search.TruncatedCount,
+            SupersededCount = superseded,
             OrchestratorMode = "DeterministicFallback",
             RiskWarning = warning,
             ToolCallTrail = trail
@@ -735,14 +738,14 @@ public class OrchestratorAgent
         Console.WriteLine(sb.ToString());
     }
 
-    private async Task PersistFarmMatchesAsync(Guid requestId, List<MatchResult> matches)
+    private async Task<int> PersistFarmMatchesAsync(Guid requestId, List<MatchResult> matches)
     {
         if (matches.Count == 0)
-            return;
+            return 0;
 
         try
         {
-            await UpsertFarmMatchesAsync(requestId, matches);
+            return await UpsertFarmMatchesAsync(requestId, matches);
         }
         catch (DbUpdateException ex) when (UniqueConstraintViolation.IsViolation(ex))
         {
@@ -754,7 +757,7 @@ public class OrchestratorAgent
             DetachAddedFarmMatches();
             try
             {
-                await UpsertFarmMatchesAsync(requestId, matches);
+                return await UpsertFarmMatchesAsync(requestId, matches);
             }
             catch (Exception retryEx)
             {
@@ -763,6 +766,7 @@ public class OrchestratorAgent
                     "Failed to persist FarmMatch rows for RequestId {RequestId} after unique conflict retry: {Exception}",
                     requestId,
                     retryEx.Message);
+                return 0;
             }
         }
         catch (Exception ex)
@@ -772,41 +776,70 @@ public class OrchestratorAgent
                 "Failed to persist FarmMatch rows for RequestId {RequestId}: {Exception}",
                 requestId,
                 ex.Message);
+            return 0;
         }
     }
 
-    private async Task UpsertFarmMatchesAsync(Guid requestId, List<MatchResult> matches)
+    private async Task<int> UpsertFarmMatchesAsync(Guid requestId, List<MatchResult> matches)
     {
         var farmIds = matches.Select(m => m.FarmId).ToHashSet();
 
-        // Supersede stale Proposed matches that fell out of the new shortlist.
-        var staleProposed = await _context.FarmMatches
+        // Supersede stale Proposed/Countered matches that fell out of the new shortlist.
+        // Never touch Accepted or factory-excluded rows.
+        var staleMatches = await _context.FarmMatches
             .Include(m => m.Farm)
+            .Include(m => m.SupplyRequest)
+                .ThenInclude(r => r.Factory)
             .Where(m =>
                 m.RequestId == requestId
-                && m.Status == FarmMatchStatus.Proposed
+                && !m.IsExcludedByFactory
+                && (m.Status == FarmMatchStatus.Proposed || m.Status == FarmMatchStatus.Countered)
                 && !farmIds.Contains(m.FarmId))
             .ToListAsync();
 
-        foreach (var stale in staleProposed)
+        foreach (var stale in staleMatches)
         {
             stale.Status = FarmMatchStatus.Expired;
-            var farmUserId = stale.Farm?.UserId ?? Guid.Empty;
-            if (farmUserId != Guid.Empty)
+            NotifyMatchSuperseded(stale.Farm?.UserId);
+            var factoryUserId = stale.SupplyRequest?.Factory?.UserId;
+            if (factoryUserId is Guid fUid && fUid != Guid.Empty
+                && fUid != (stale.Farm?.UserId ?? Guid.Empty))
             {
-                _context.Notifications.Add(new Notification
-                {
-                    NotificationId = Guid.NewGuid(),
-                    UserId = farmUserId,
-                    Title = "Match superseded",
-                    Message =
-                        "A newer matching run replaced your proposal for this supply request.",
-                    Type = "MatchSuperseded",
-                    IsRead = false,
-                    CreatedAt = DateTime.UtcNow
-                });
+                NotifyMatchSuperseded(fUid);
             }
         }
+
+        var requestTerms = await _context.SupplyRequests
+            .AsNoTracking()
+            .Where(r => r.RequestId == requestId)
+            .Select(r => new
+            {
+                r.CropTypeId,
+                r.DeliveryPoint,
+                r.FreightPayer,
+                r.TransitRisk
+            })
+            .FirstOrDefaultAsync();
+        var requestCropId = requestTerms?.CropTypeId ?? Guid.Empty;
+
+        var snapshotFarms = await _context.Farm
+            .AsNoTracking()
+            .Where(f => farmIds.Contains(f.FarmId))
+            .Select(f => new
+            {
+                f.FarmId,
+                f.Governorate,
+                f.RiskScore,
+                f.IsVerified,
+                Crops = f.FarmCrops.Select(c => new
+                {
+                    c.CropTypeId,
+                    c.AvailableQuantityTons,
+                    c.MinPricePerTon
+                }).ToList()
+            })
+            .ToListAsync();
+        var snapshotByFarm = snapshotFarms.ToDictionary(f => f.FarmId);
 
         var existingMatches = await _context.FarmMatches
             .Where(m => m.RequestId == requestId && farmIds.Contains(m.FarmId))
@@ -821,20 +854,51 @@ public class OrchestratorAgent
 
         foreach (var match in matches)
         {
-            var snapshot = MatchGovernoratePolicy.SnapshotFromFarm(match.Governorate);
+            var govSnapshot = MatchGovernoratePolicy.SnapshotFromFarm(match.Governorate);
+            string? eligibilityJson = null;
+            if (snapshotByFarm.TryGetValue(match.FarmId, out var farmSnap))
+            {
+                var cropForRequest = farmSnap.Crops.FirstOrDefault(c => c.CropTypeId == requestCropId);
+                eligibilityJson = new NileChain.Domain.Matching.MatchEligibilitySnapshot
+                {
+                    Governorate = farmSnap.Governorate,
+                    CropTypeIds = farmSnap.Crops.Select(c => c.CropTypeId).ToList(),
+                    AvailableQuantityTons = cropForRequest?.AvailableQuantityTons,
+                    MinPricePerTon = cropForRequest?.MinPricePerTon,
+                    RiskScore = farmSnap.RiskScore,
+                    IsVerified = farmSnap.IsVerified,
+                    DeliveryPoint = requestTerms?.DeliveryPoint.ToString(),
+                    FreightPayer = requestTerms?.FreightPayer.ToString(),
+                    TransitRisk = requestTerms?.TransitRisk.ToString()
+                }.ToJson();
+            }
 
             if (existingByFarmId.TryGetValue(match.FarmId, out var existing))
             {
+                // Factory exclusion survives re-runs — never revive.
+                if (existing.IsExcludedByFactory)
+                {
+                    match.MatchId = existing.MatchId;
+                    continue;
+                }
+
                 existing.MatchScore = match.MatchScore;
                 existing.RiskScore = match.RiskScore;
                 if (string.IsNullOrWhiteSpace(existing.MatchedGovernorate))
-                    existing.MatchedGovernorate = snapshot;
+                    existing.MatchedGovernorate = govSnapshot;
 
                 if (existing.Status is FarmMatchStatus.Expired or FarmMatchStatus.Rejected)
                 {
                     existing.Status = FarmMatchStatus.Proposed;
-                    existing.MatchedGovernorate = snapshot;
+                    existing.MatchedGovernorate = govSnapshot;
+                    existing.EligibilitySnapshotJson = eligibilityJson;
                     newProposedFarmIds.Add(match.FarmId);
+                }
+                else if (existing.Status == FarmMatchStatus.Proposed
+                         && string.IsNullOrWhiteSpace(existing.EligibilitySnapshotJson)
+                         && eligibilityJson is not null)
+                {
+                    existing.EligibilitySnapshotJson = eligibilityJson;
                 }
 
                 match.MatchId = existing.MatchId;
@@ -850,7 +914,8 @@ public class OrchestratorAgent
                 FarmId = match.FarmId,
                 MatchScore = match.MatchScore,
                 RiskScore = match.RiskScore,
-                MatchedGovernorate = snapshot,
+                MatchedGovernorate = govSnapshot,
+                EligibilitySnapshotJson = eligibilityJson,
                 Status = FarmMatchStatus.Proposed,
                 CreatedAt = DateTime.UtcNow
             });
@@ -876,13 +941,23 @@ public class OrchestratorAgent
                 {
                     NotificationId = Guid.NewGuid(),
                     UserId = farm.UserId,
-                    Title = "New match proposal",
-                    Message =
-                        "Your farm was shortlisted for a supply request. Review the proposal in Matches.",
+                    Title = "notifications.types.matchProposed.title",
+                    Message = "notifications.types.matchProposed.body",
                     Type = "MatchProposed",
                     IsRead = false,
                     CreatedAt = DateTime.UtcNow
                 });
+            }
+        }
+
+        if (persistedCount > 0)
+        {
+            var supplyRequest = await _context.SupplyRequests
+                .FirstOrDefaultAsync(r => r.RequestId == requestId);
+            if (supplyRequest is not null
+                && supplyRequest.Status == NileChain.Domain.Enums.SupplyRequestStatus.Pending)
+            {
+                supplyRequest.Status = NileChain.Domain.Enums.SupplyRequestStatus.Matched;
             }
         }
 
@@ -893,8 +968,27 @@ public class OrchestratorAgent
             "(superseded={Superseded}, newlyProposed={New})",
             persistedCount,
             requestId,
-            staleProposed.Count,
+            staleMatches.Count,
             newProposedFarmIds.Count);
+
+        return staleMatches.Count;
+    }
+
+    private void NotifyMatchSuperseded(Guid? userId)
+    {
+        if (userId is not Guid uid || uid == Guid.Empty)
+            return;
+
+        _context.Notifications.Add(new Notification
+        {
+            NotificationId = Guid.NewGuid(),
+            UserId = uid,
+            Title = "notifications.types.matchSuperseded.title",
+            Message = "notifications.types.matchSuperseded.body",
+            Type = "MatchSuperseded",
+            IsRead = false,
+            CreatedAt = DateTime.UtcNow
+        });
     }
 
     private void DetachAddedFarmMatches()

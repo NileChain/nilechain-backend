@@ -28,6 +28,9 @@ public static class ResultHttpMapper
             || Contains(code, "Frozen")
             || Contains(code, "Blocked")
             || Contains(code, "ActiveExists")
+            || Contains(code, "WeighbridgeRequired")
+            || Contains(code, "AcceptedExceedsWeighed")
+            || Contains(code, "EligibilityChanged")
             || string.Equals(code, "Factory.IdempotencyConflict", StringComparison.OrdinalIgnoreCase))
         {
             return HttpStatusCode.Conflict;

@@ -55,6 +55,6 @@ public sealed class AdminDisputeActionRequest
     /// <summary>Required for Resolved / Rejected. Optional note when moving to UnderReview.</summary>
     public string? AdminNote { get; set; }
 
-    /// <summary>Required when resolving: Farm or Factory. Ignored on reject.</summary>
+    /// <summary>Required when resolving: Farm, Factory, or Split. Ignored on reject.</summary>
     public string? OutcomeFavor { get; set; }
 }

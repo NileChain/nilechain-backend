@@ -5,34 +5,37 @@ namespace NileChain.Domain.Common;
 
 /// <summary>
 /// Single transactional contract ↔ match state machine.
-/// Policy: create / persist / sign only when the match is <see cref="FarmMatchStatus.Proposed"/>.
+/// Policy: create / persist / sign when the match is <see cref="FarmMatchStatus.Proposed"/>
+/// or <see cref="FarmMatchStatus.Countered"/> (farm counter terms apply via MatchCommercialTerms).
 /// Regenerating text on an <see cref="FarmMatchStatus.Accepted"/> match atomically reopens it to Proposed
 /// (signatures cleared). Rejected / Expired matches never reopen — callers must fail cleanly.
 /// </summary>
 public static class ContractExecution
 {
     /// <summary>
-    /// True when a new contract may be created for this match (must be Proposed).
+    /// True when a new contract may be created for this match.
     /// </summary>
     public static bool CanCreateContract(FarmMatch match)
     {
         ArgumentNullException.ThrowIfNull(match);
-        return match.Status == FarmMatchStatus.Proposed;
+        return match.Status is FarmMatchStatus.Proposed or FarmMatchStatus.Countered;
     }
 
     /// <summary>
-    /// True when a party may sign the contract (match must still be Proposed).
+    /// True when a party may sign the contract.
     /// </summary>
     public static bool CanSign(FarmMatch? match) =>
-        match is { Status: FarmMatchStatus.Proposed };
+        match is { Status: FarmMatchStatus.Proposed or FarmMatchStatus.Countered };
 
     /// <summary>
-    /// True when generated text may be replaced (Proposed, or Accepted which will reopen).
+    /// True when generated text may be replaced (Proposed/Countered, or Accepted which will reopen).
     /// </summary>
     public static bool CanReplaceText(FarmMatch match)
     {
         ArgumentNullException.ThrowIfNull(match);
-        return match.Status is FarmMatchStatus.Proposed or FarmMatchStatus.Accepted;
+        return match.Status is FarmMatchStatus.Proposed
+            or FarmMatchStatus.Countered
+            or FarmMatchStatus.Accepted;
     }
 
     /// <summary>
@@ -83,17 +86,17 @@ public static class ContractExecution
         if (!contract.IsFullySigned)
             return;
 
-        if (contract.FarmMatch is { Status: FarmMatchStatus.Proposed } match)
+        if (contract.FarmMatch is { Status: FarmMatchStatus.Proposed or FarmMatchStatus.Countered } match)
             match.Status = FarmMatchStatus.Accepted;
     }
 
     /// <summary>
-    /// When a contract is rejected/cancelled, mark a Proposed match as Rejected.
+    /// When a contract is rejected/cancelled, mark a Proposed/Countered match as Rejected.
     /// </summary>
     public static void RejectMatchIfProposed(Contract contract)
     {
         ArgumentNullException.ThrowIfNull(contract);
-        if (contract.FarmMatch is { Status: FarmMatchStatus.Proposed } match)
+        if (contract.FarmMatch is { Status: FarmMatchStatus.Proposed or FarmMatchStatus.Countered } match)
             match.Status = FarmMatchStatus.Rejected;
     }
 }

@@ -32,7 +32,27 @@ public static class FulfillmentErrors
         "Fulfillment.FrozenByDispute",
         "Fulfillment status cannot change while a dispute on this contract is open or under review.");
 
+    public static readonly Error InvalidQualityCheck = new(
+        "Fulfillment.InvalidQualityCheck",
+        "Quality check values are invalid (accepted quantity and discount percent).");
+
     public static readonly Error ContractNotFound = new(
         "Fulfillment.ContractNotFound",
         "Contract not found.");
+
+    public static readonly Error WeighbridgeRequired = new(
+        "Fulfillment.WeighbridgeRequired",
+        "Weighed quantity in tons is required when marking the delivery received.");
+
+    public static readonly Error AcceptedExceedsWeighed = new(
+        "Fulfillment.AcceptedExceedsWeighed",
+        "Accepted QC quantity cannot exceed the weighbridge tons recorded at receive.");
+
+    public static readonly Error GateRejectNotesRequired = new(
+        "Fulfillment.GateRejectNotesRequired",
+        "Notes are required when the gate-reject reason is Other.");
+
+    public static readonly Error InvalidGateReject = new(
+        "Fulfillment.InvalidGateReject",
+        "A valid gate-reject reason is required.");
 }

@@ -80,4 +80,68 @@ public class MarketPriceService : IMarketPriceService
 
         return Result<List<MarketPriceSeriesDto>>.Success(series);
     }
+
+    public async Task<Result<FairPriceHintDto>> GetFairPriceHintAsync(
+        string cropName,
+        decimal requestedPricePerTon,
+        string? governorate)
+    {
+        var hint = new FairPriceHintDto
+        {
+            CropName = cropName?.Trim() ?? string.Empty,
+            Governorate = string.IsNullOrWhiteSpace(governorate) ? null : governorate.Trim(),
+            RequestedPricePerTon = requestedPricePerTon,
+            Alignment = "NoData",
+            Hint = "No market series for this crop yet."
+        };
+
+        if (string.IsNullOrWhiteSpace(cropName) || requestedPricePerTon < 0)
+            return Result<FairPriceHintDto>.Success(hint);
+
+        var crops = await _cropTypeRepository.GetAllAsync();
+        var crop = crops.FirstOrDefault(c =>
+            string.Equals(c.Name, cropName.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (crop is null)
+            return Result<FairPriceHintDto>.Success(hint);
+
+        var all = await _marketPriceRepository.GetAllAsync();
+        var query = all.Where(p => p.CropTypeId == crop.CropTypeId);
+        if (!string.IsNullOrWhiteSpace(governorate))
+        {
+            var govFiltered = query.Where(p =>
+                string.Equals(p.Governorate, governorate.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (govFiltered.Any())
+                query = govFiltered;
+        }
+
+        var latest = query.OrderByDescending(p => p.RecordedAt).FirstOrDefault();
+        if (latest is null || latest.PricePerTon <= 0)
+            return Result<FairPriceHintDto>.Success(hint);
+
+        var delta = (requestedPricePerTon - latest.PricePerTon) / latest.PricePerTon * 100m;
+        string alignment;
+        string text;
+        if (Math.Abs(delta) < 8m)
+        {
+            alignment = "Aligned";
+            text = $"Within 8% of the latest {crop.Name} market print ({latest.PricePerTon:0} EGP/t).";
+        }
+        else if (delta > 0)
+        {
+            alignment = "AboveMarket";
+            text = $"About {delta:0.#}% above the latest {crop.Name} market print ({latest.PricePerTon:0} EGP/t).";
+        }
+        else
+        {
+            alignment = "BelowMarket";
+            text = $"About {Math.Abs(delta):0.#}% below the latest {crop.Name} market print ({latest.PricePerTon:0} EGP/t).";
+        }
+
+        hint.LatestPricePerTon = latest.PricePerTon;
+        hint.LatestRecordedAt = latest.RecordedAt;
+        hint.PercentageDelta = Math.Round(delta, 1);
+        hint.Alignment = alignment;
+        hint.Hint = text;
+        return Result<FairPriceHintDto>.Success(hint);
+    }
 }

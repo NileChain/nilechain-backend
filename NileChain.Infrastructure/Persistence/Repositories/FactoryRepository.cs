@@ -218,6 +218,8 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
                     .ThenInclude(r => r!.Factory)
                         .ThenInclude(f => f!.User)
             .Include(c => c.IntegrityAnchors)
+            .Include(c => c.Revisions)
+            .Include(c => c.Fulfillment)
             .FirstOrDefaultAsync(c =>
                 c.ContractId == contractId && c.FarmMatch.SupplyRequest.FactoryId == factoryId);
 

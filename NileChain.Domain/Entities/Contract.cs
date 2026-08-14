@@ -1,3 +1,4 @@
+using NileChain.Domain.Common;
 using NileChain.Domain.Enums;
 
 namespace NileChain.Domain.Entities;
@@ -13,6 +14,31 @@ public class Contract
 
     /// <summary>Set only when both parties have signed (fully executed).</summary>
     public DateTime? SignedAt { get; set; }
+
+    /// <summary>
+    /// Effective contract start — set to the later of the two signatures when fully signed.
+    /// May later be amended by bilateral agreement.
+    /// </summary>
+    public DateTime? StartsAt { get; set; }
+
+    /// <summary>
+    /// Effective contract end / delivery deadline. Seeded from deal delivery date on full sign;
+    /// amendable by bilateral agreement (e.g. delay).
+    /// </summary>
+    public DateTime? EndsAt { get; set; }
+
+    /// <summary>Proposed new start awaiting the other party's acceptance.</summary>
+    public DateTime? PendingStartsAt { get; set; }
+
+    /// <summary>Proposed new end awaiting the other party's acceptance.</summary>
+    public DateTime? PendingEndsAt { get; set; }
+
+    public Guid? DateAmendmentProposedByUserId { get; set; }
+    public DateTime? DateAmendmentProposedAt { get; set; }
+
+    public bool HasPendingDateAmendment =>
+        DateAmendmentProposedByUserId.HasValue
+        && (PendingStartsAt.HasValue || PendingEndsAt.HasValue);
 
     /// <summary>Factory party signature timestamp. Null until factory explicitly signs.</summary>
     public DateTime? FactorySignedAt { get; set; }
@@ -44,6 +70,7 @@ public class Contract
     public ICollection<Review> Reviews { get; set; } = new List<Review>();
     public ICollection<ContractAttachment> Attachments { get; set; } = new List<ContractAttachment>();
     public ICollection<ContractIntegrityAnchor> IntegrityAnchors { get; set; } = new List<ContractIntegrityAnchor>();
+    public ICollection<ContractRevision> Revisions { get; set; } = new List<ContractRevision>();
 
     /// <summary>Optimistic concurrency token (SQL Server rowversion).</summary>
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();
@@ -90,5 +117,8 @@ public class Contract
         FactorySignedAt = null;
         FarmSignedAt = null;
         SignedAt = null;
+        StartsAt = null;
+        EndsAt = null;
+        ContractTermDates.ClearPendingAmendment(this);
     }
 }

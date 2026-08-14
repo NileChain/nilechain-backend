@@ -10,7 +10,14 @@ public class FactoryContractDto
     public string? CropName { get; set; }
     public decimal QuantityTons { get; set; }
     public decimal? PricePerTon { get; set; }
+    public string? QualityRequirements { get; set; }
     public DateTime? DeliveryDate { get; set; }
+    public DateTime? StartsAt { get; set; }
+    public DateTime? EndsAt { get; set; }
+    public bool HasPendingDateAmendment { get; set; }
+    public DateTime? PendingStartsAt { get; set; }
+    public DateTime? PendingEndsAt { get; set; }
+    public Guid? DateAmendmentProposedByUserId { get; set; }
     public string? DeliveryLocation { get; set; }
     public string? GeneratedText { get; set; }
     public string? PdfUrl { get; set; }
@@ -28,6 +35,7 @@ public class FactoryContractDto
     public decimal? MatchScore { get; set; }
     public decimal? RiskScore { get; set; }
     public NileChain.Application.Dtos.Integrity.ContractIntegrityDto? Integrity { get; set; }
+    public NileChain.Application.Dtos.Contracts.ContractRevisionDto? LastRevision { get; set; }
 }
 
 public class PersistContractRequest

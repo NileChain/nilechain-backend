@@ -6,6 +6,7 @@ using NileChain.AI.RAG;
 using NileChain.AI.Services;
 using NileChain.AI.Sbg;
 using NileChain.AI.Weather;
+using NileChain.Application.Interfaces;
 using NileChain.Domain.Interfaces;
 
 namespace NileChain.AI;
@@ -96,6 +97,7 @@ public static class DependencyInjection
         services.Configure<MonitoringOptions>(configuration.GetSection(MonitoringOptions.SectionName));
 
         services.AddScoped<AIOrchestrationService>();
+        services.AddScoped<IContractTextReviser, ContractTextReviser>();
 
         return services;
     }

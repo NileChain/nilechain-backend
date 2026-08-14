@@ -44,5 +44,7 @@ public class DealPhysicsPolicyTests
 
         Assert.Contains("باب المزرعة", prompt, StringComparison.Ordinal);
         Assert.Contains("أجرة النقل يتحملها: المصنع", prompt, StringComparison.Ordinal);
+        Assert.Contains("الطرف الأول — المشتري", prompt, StringComparison.Ordinal);
+        Assert.Contains("ممنوع تماماً إدراج خانات توقيع", prompt, StringComparison.Ordinal);
     }
 }

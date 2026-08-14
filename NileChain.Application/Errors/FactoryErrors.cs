@@ -63,4 +63,44 @@ public static class FactoryErrors
     public static readonly Error FarmNotFound = new(
         "Factory.FarmNotFound",
         "Farm not found.");
+
+    public static readonly Error ContractNotSigned = new(
+        "Factory.ContractNotSigned",
+        "Contract term dates can only be amended after both parties have signed.");
+
+    public static readonly Error DateAmendmentInvalid = new(
+        "Factory.DateAmendmentInvalid",
+        "Provide at least one new start or end date for the amendment.");
+
+    public static readonly Error DateAmendmentEndBeforeStart = new(
+        "Factory.DateAmendmentEndBeforeStart",
+        "Contract end date must be on or after the start date.");
+
+    public static readonly Error DateAmendmentPending = new(
+        "Factory.DateAmendmentPending",
+        "A date amendment is already pending. Accept or reject it before proposing another.");
+
+    public static readonly Error DateAmendmentNotPending = new(
+        "Factory.DateAmendmentNotPending",
+        "There is no pending date amendment to accept or reject.");
+
+    public static readonly Error DateAmendmentOwnProposal = new(
+        "Factory.DateAmendmentOwnProposal",
+        "The other party must accept or reject this date amendment.");
+
+    public static readonly Error ContractAlreadyFullySigned = new(
+        "Factory.ContractAlreadyFullySigned",
+        "Signed contracts cannot be rewritten. Use a date amendment or cancel and regenerate.");
+
+    public static readonly Error ChangeInstructionsRequired = new(
+        "Factory.ChangeInstructionsRequired",
+        "Describe the changes you want applied to the contract draft.");
+
+    public static readonly Error ContractTextMissing = new(
+        "Factory.ContractTextMissing",
+        "This contract has no draft text to revise yet. Generate the contract first.");
+
+    public static readonly Error AiRevisionUnavailable = new(
+        "Factory.AiRevisionUnavailable",
+        "Could not apply the requested changes (AI unavailable). Try again shortly.");
 }

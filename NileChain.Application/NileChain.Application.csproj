@@ -20,4 +20,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\Fonts\*.ttf" />
+    <EmbeddedResource Include="Resources\nilechain-mark.png" />
+    <EmbeddedResource Include="Resources\nilechain-mark-light.png" />
+    <Content Include="Resources\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

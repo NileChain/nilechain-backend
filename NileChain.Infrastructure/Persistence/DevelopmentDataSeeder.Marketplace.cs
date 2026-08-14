@@ -335,7 +335,7 @@ public static partial class DevelopmentDataSeeder
                     $"{SeedMarker} عقد توريد زراعي — Development supply contract for match {match.MatchId:N}.\n" +
                     "بسم الله الرحمن الرحيم\n" +
                     "**عقد توريد زراعي**\n" +
-                    "الطرف الأول (المورد / المزرعة) والطرف الثاني (المصنع) يوافقان على الكمية والمواصفات وموعد التوريد.\n" +
+                    "الطرف الأول (المشتري / المصنع) والطرف الثاني (المورد / المزرعة) يوافقان على الكمية والمواصفات وموعد التوريد.\n" +
                     $"Status={status}. Governed by Egyptian civil code. Force majeure includes extreme Nile flood events.",
                 PdfUrl = status is ContractStatus.Signed or ContractStatus.PendingSignature
                     ? $"https://res.cloudinary.com/demo/raw/upload/seed/contracts/{match.MatchId:N}.pdf"

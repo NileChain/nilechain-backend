@@ -1,4 +1,5 @@
 using NileChain.API.Extensions;
+using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Dtos.Farm;
 using NileChain.Application.Interfaces;
 using NileChain.Application.Validation;
@@ -20,6 +21,8 @@ public class FarmController : ControllerBase
     private readonly IMockEscrowPaymentService _mockEscrowPaymentService;
     private readonly IDisputeService _disputeService;
     private readonly IContractAttachmentService _attachmentService;
+    private readonly IContractDateAmendmentService _dateAmendmentService;
+    private readonly IContractChangeRequestService _changeRequestService;
 
     public FarmController(
         IFarmService farmService,
@@ -27,7 +30,9 @@ public class FarmController : ControllerBase
         IPaymentMilestoneService paymentMilestoneService,
         IMockEscrowPaymentService mockEscrowPaymentService,
         IDisputeService disputeService,
-        IContractAttachmentService attachmentService)
+        IContractAttachmentService attachmentService,
+        IContractDateAmendmentService dateAmendmentService,
+        IContractChangeRequestService changeRequestService)
     {
         _farmService = farmService;
         _fulfillmentService = fulfillmentService;
@@ -35,6 +40,8 @@ public class FarmController : ControllerBase
         _mockEscrowPaymentService = mockEscrowPaymentService;
         _disputeService = disputeService;
         _attachmentService = attachmentService;
+        _dateAmendmentService = dateAmendmentService;
+        _changeRequestService = changeRequestService;
     }
 
     [HttpGet("profile")]
@@ -386,6 +393,68 @@ public class FarmController : ControllerBase
             return Unauthorized();
 
         var result = await _farmService.ApproveContractAsync(Guid.Parse(userId), contractId);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/request-changes")]
+    public async Task<IActionResult> RequestContractChanges(
+        Guid contractId,
+        [FromBody] RequestContractChangesRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _changeRequestService.RequestChangesAsync(
+            Guid.Parse(userId),
+            contractId,
+            asFactory: false,
+            request);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/date-amendment")]
+    public async Task<IActionResult> ProposeDateAmendment(
+        Guid contractId,
+        [FromBody] ProposeContractDateAmendmentRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _dateAmendmentService.ProposeAsync(
+            Guid.Parse(userId),
+            contractId,
+            asFactory: false,
+            request);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/date-amendment/accept")]
+    public async Task<IActionResult> AcceptDateAmendment(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _dateAmendmentService.AcceptAsync(
+            Guid.Parse(userId),
+            contractId,
+            asFactory: false);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("contracts/{contractId:guid}/date-amendment/reject")]
+    public async Task<IActionResult> RejectDateAmendment(Guid contractId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _dateAmendmentService.RejectAsync(
+            Guid.Parse(userId),
+            contractId,
+            asFactory: false);
         return result.ToActionResult();
     }
 

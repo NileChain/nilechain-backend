@@ -1,5 +1,6 @@
 using NileChain.Application.Common;
 using NileChain.Application.Contracts;
+using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Dtos.Farm;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
@@ -914,52 +915,52 @@ public class FarmService : IFarmService
         string? quality)
     {
         var priceLine = price is null
-            ? "Price per ton to be confirmed in writing."
-            : $"Price: {price:N0} EGP per ton.";
+            ? "سعر الطن يُحدَّد كتابةً لاحقاً."
+            : $"السعر: {price:N0} جنيه مصري للطن.";
         var deliveryLine = delivery is null
-            ? "Delivery date to be agreed by both parties."
-            : $"Delivery Date: {delivery:yyyy-MM-dd}.";
+            ? "تاريخ التسليم يُتفق عليه بين الطرفين."
+            : $"تاريخ التسليم: {delivery:yyyy-MM-dd}.";
         var qualityLine = string.IsNullOrWhiteSpace(quality)
-            ? "Goods must meet customary market quality standards for the crop."
-            : $"Quality Specifications: {quality}";
+            ? "يجب أن تستوفي البضاعة معايير الجودة المعتادة في السوق للمحصول."
+            : $"مواصفات الجودة: {quality}";
 
         return
             $"""
-            Agricultural Supply Contract
+            بسم الله الرحمن الرحيم
 
-            1. Parties
-            This agreement is entered into between {factoryName} (the "Factory" / Buyer) and {farmName} (the "Farm" / Supplier).
+            عقد توريد زراعي
 
-            2. Scope
-            The Farm agrees to supply {qty:N2} tons of {crop} to the Factory under the terms of this contract.
+            الطرف الأول (المشتري / المصنع): {factoryName}
+            الطرف الثاني (المورد / المزرعة): {farmName}
 
-            3. Payment
+            المادة الأولى — موضوع العقد
+            يتعهد المورد بتوريد {qty:N2} طن متري من محصول «{crop}» إلى المشتري وفق أحكام هذا العقد.
+
+            المادة الثانية — الثمن والسداد
             {priceLine}
-            Payment shall be settled after delivery and inspection confirmation by the Factory.
-            Late payment may incur standard NileChain settlement remedies.
+            يتم السداد بعد التسليم وتأكيد الفحص من المشتري، مع خضوع التأخر لآليات التسوية المعتمدة على منصة NileChain.
 
-            4. Delivery
+            المادة الثالثة — التسليم
             {deliveryLine}
-            Delivery Location: {location}.
-            Risk of loss transfers upon accepted delivery at the stated location.
+            مكان التسليم: {location}.
+            تنتقل مخاطر الهلاك عند قبول التسليم في المكان المحدد.
 
-            5. Responsibilities
-            The Farm shall ensure timely harvest, packaging, and dispatch.
-            The Factory shall provide receiving capacity and complete inspection within a reasonable period.
+            المادة الرابعة — التزامات الطرفين
+            يلتزم المورد بالحصاد والتعبئة والإرسال في المواعيد المتفق عليها، ويلتزم المشتري بتوفير طاقة الاستلام وإتمام الفحص خلال مدة معقولة.
 
-            6. Quality Standards
+            المادة الخامسة — الجودة
             {qualityLine}
-            Non-conforming shipments may be rejected or subject to price adjustment.
+            يجوز رفض الشحنات غير المطابقة أو تعديل السعر بحسب الضرر الفعلي.
 
-            7. Force Majeure
-            Neither party is liable for delays caused by events beyond reasonable control, including extreme weather, provided prompt notice is given.
+            المادة السادسة — القوة القاهرة
+            لا يُسأل أي طرف عن التأخر الناتج عن أحداث خارجة عن السيطرة المعقولة، بما في ذلك الأحوال الجوية القصوى، شريطة الإخطار الفوري.
 
-            8. Termination
-            Either party may terminate for material breach if not cured within a reasonable cure period after written notice.
-            Unilateral rejection before signature cancels this draft without liability beyond reasonable reliance costs.
+            المادة السابعة — الإنهاء
+            يجوز لأي طرف إنهاء العقد عند الإخلال الجوهري إذا لم يُعالَج خلال مدة معقولة بعد الإخطار الكتابي.
+            رفض المسودة قبل التوقيع يلغي هذا المشروع دون مسؤولية تتجاوز تكاليف الاعتماد المعقولة.
 
-            9. Signatures
-            By accepting this contract in NileChain, each party confirms they have reviewed all terms and agree to be bound.
+            المادة الثامنة — القبول الإلكتروني
+            بقبول هذا العقد عبر منصة NileChain يؤكد كل طرف أنه راجع البنود ويوافق على الالتزام بها، وأن التوقيع الإلكتروني عبر المنصة ملزم.
             """;
     }
 
@@ -1135,6 +1136,7 @@ public class FarmService : IFarmService
         if (contract is null)
             return Result<FarmContractDto>.Failure(FarmErrors.ContractNotFound);
 
+        await EnsureTermDatesPersistedAsync(contract);
         return Result<FarmContractDto>.Success(MapContract(contract));
     }
 
@@ -1203,6 +1205,13 @@ public class FarmService : IFarmService
         // FactorySignedAt must remain unchanged.
         contract.RefreshSignatureStatus();
         ContractExecution.AcceptMatchIfFullySigned(contract);
+
+        if (contract.IsFullySigned)
+        {
+            var delivery = MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+                ?? contract.FarmMatch?.SupplyRequest?.DeliveryDate;
+            ContractTermDates.ApplyOnFullSign(contract, delivery);
+        }
 
         if (contract.IsFullySigned && !contract.HasDealFundsHeld)
         {
@@ -1373,21 +1382,81 @@ public class FarmService : IFarmService
         if (contract is null)
             return Result<(byte[], string)>.Failure(FarmErrors.ContractNotFound);
 
-        var text = contract.GeneratedText ?? string.Empty;
-        var farmName = contract.FarmMatch?.Farm?.Name ?? farm.Name;
-        var factoryName = contract.FarmMatch?.SupplyRequest?.Factory?.Name ?? "Factory";
-        var bytes = _pdfService.GeneratePdf(
-            "Agricultural Supply Contract",
-            text,
-            farmName,
-            factoryName,
-            factorySigned: contract.IsFactorySigned,
-            farmSigned: contract.IsFarmSigned,
-            factorySignedAt: contract.FactorySignedAt,
-            farmSignedAt: contract.FarmSignedAt);
+        await EnsureTermDatesPersistedAsync(contract);
+        var startsAt = contract.StartsAt ?? (contract.IsFullySigned ? contract.SignedAt : null);
+        var endsAt = contract.EndsAt
+            ?? (contract.FarmMatch is not null
+                ? MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+                : contract.FarmMatch?.SupplyRequest?.DeliveryDate);
+        var text = ContractTermDates.FillPlaceholders(contract.GeneratedText, startsAt, endsAt)
+            ?? string.Empty;
+        var factory = contract.FarmMatch?.SupplyRequest?.Factory;
+        var farmEntity = contract.FarmMatch?.Farm;
+        var supply = contract.FarmMatch?.SupplyRequest;
+        var delivery = contract.FarmMatch is not null
+            ? MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+            : supply?.DeliveryDate;
+        var pdfModel = new NileChain.Application.Dtos.Contracts.ContractPdfModel
+        {
+            ContractId = contract.ContractId,
+            Title = "Agricultural Supply Agreement",
+            Status = contract.Status.ToString(),
+            DocumentVersion = "1.0",
+            CreatedAt = contract.CreatedAt,
+            UpdatedAt = contract.SignedAt ?? contract.FarmSignedAt ?? contract.FactorySignedAt ?? contract.CreatedAt,
+            StartsAt = startsAt,
+            EndsAt = endsAt,
+            DeliveryDate = delivery,
+            FactoryName = factory?.Name ?? "Factory",
+            FactoryLocation = factory?.Location ?? factory?.Governorate,
+            FarmName = farmEntity?.Name ?? farm.Name,
+            FarmLocation = farmEntity?.Location ?? farmEntity?.Governorate,
+            CropName = supply?.CropType?.Name ?? string.Empty,
+            QuantityTons = contract.FarmMatch is not null
+                ? MatchCommercialTerms.QuantityTons(contract.FarmMatch)
+                : supply?.QuantityTons ?? 0,
+            PricePerTon = contract.FarmMatch is not null
+                ? MatchCommercialTerms.PricePerTon(contract.FarmMatch)
+                : supply?.PricePerTon,
+            DeliveryLocation = factory?.Location ?? factory?.Governorate,
+            QualityRequirements = NileChain.Application.Common.ContractQualitySummary.Format(supply?.QualitySpecs),
+            PaymentTerms = ContractBodyParser.ExtractPaymentTermsHint(text),
+            RiskScore = contract.FarmMatch?.RiskScore,
+            GeneratedText = text,
+            FactorySigned = contract.IsFactorySigned,
+            FarmSigned = contract.IsFarmSigned,
+            FactorySignedAt = contract.FactorySignedAt,
+            FarmSignedAt = contract.FarmSignedAt
+        };
+        var bytes = _pdfService.GeneratePdf(pdfModel);
 
         // Do not persist role-scoped PdfUrl — download endpoints are authoritative.
         return Result<(byte[], string)>.Success((bytes, $"contract-{contract.ContractId:N}.pdf"));
+    }
+
+    private async Task EnsureTermDatesPersistedAsync(Contract contract)
+    {
+        if (!contract.IsFullySigned)
+            return;
+
+        var delivery = contract.FarmMatch is not null
+            ? MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+            : contract.FarmMatch?.SupplyRequest?.DeliveryDate;
+        var beforeStart = contract.StartsAt;
+        var beforeEnd = contract.EndsAt;
+        var beforeText = contract.GeneratedText;
+
+        ContractTermDates.EnsureApplied(contract, delivery);
+
+        if (contract.StartsAt == beforeStart
+            && contract.EndsAt == beforeEnd
+            && contract.GeneratedText == beforeText)
+        {
+            return;
+        }
+
+        _contractRepository.Update(contract);
+        await _unitOfWork.SaveChangesAsync();
     }
 
     private static FarmContractDto MapContract(Contract c)
@@ -1395,6 +1464,11 @@ public class FarmService : IFarmService
         var factory = c.FarmMatch?.SupplyRequest?.Factory;
         var farm = c.FarmMatch?.Farm;
         var supply = c.FarmMatch?.SupplyRequest;
+        var delivery = c.FarmMatch is not null
+            ? MatchCommercialTerms.DeliveryDate(c.FarmMatch)
+            : supply?.DeliveryDate;
+        var startsAt = c.StartsAt ?? (c.IsFullySigned ? c.SignedAt : null);
+        var endsAt = c.EndsAt ?? delivery;
         return new FarmContractDto
         {
             ContractId = c.ContractId,
@@ -1402,6 +1476,7 @@ public class FarmService : IFarmService
             FactoryName = factory?.Name ?? "Unknown",
             FactoryLocation = factory?.Location ?? factory?.Governorate,
             FarmName = farm?.Name ?? "Unknown",
+            FarmLocation = farm?.Location ?? farm?.Governorate,
             CropName = supply?.CropType?.Name ?? "Unknown",
             QuantityTons = c.FarmMatch is not null
                 ? MatchCommercialTerms.QuantityTons(c.FarmMatch)
@@ -1409,11 +1484,16 @@ public class FarmService : IFarmService
             PricePerTon = c.FarmMatch is not null
                 ? MatchCommercialTerms.PricePerTon(c.FarmMatch)
                 : supply?.PricePerTon,
-            DeliveryDate = c.FarmMatch is not null
-                ? MatchCommercialTerms.DeliveryDate(c.FarmMatch)
-                : supply?.DeliveryDate,
+            QualityRequirements = NileChain.Application.Common.ContractQualitySummary.Format(supply?.QualitySpecs),
+            DeliveryDate = delivery,
+            StartsAt = startsAt,
+            EndsAt = endsAt,
+            HasPendingDateAmendment = c.HasPendingDateAmendment,
+            PendingStartsAt = c.PendingStartsAt,
+            PendingEndsAt = c.PendingEndsAt,
+            DateAmendmentProposedByUserId = c.DateAmendmentProposedByUserId,
             DeliveryLocation = factory?.Location ?? factory?.Governorate,
-            GeneratedText = c.GeneratedText,
+            GeneratedText = ContractTermDates.FillPlaceholders(c.GeneratedText, startsAt, endsAt),
             PdfUrl = c.PdfUrl,
             Status = c.Status.ToString(),
             CreatedAt = c.CreatedAt,
@@ -1430,7 +1510,8 @@ public class FarmService : IFarmService
             UpdatedAt = c.SignedAt ?? c.FarmSignedAt ?? c.FactorySignedAt ?? c.CreatedAt,
             MatchScore = c.FarmMatch?.MatchScore,
             RiskScore = c.FarmMatch?.RiskScore,
-            Integrity = ContractIntegrityService.MapActive(c)
+            Integrity = ContractIntegrityService.MapActive(c),
+            LastRevision = ContractRevisionDto.Last(c.Revisions)
         };
     }
 

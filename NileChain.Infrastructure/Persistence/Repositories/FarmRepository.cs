@@ -219,6 +219,8 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
                 .ThenInclude(fm => fm.SupplyRequest)
                     .ThenInclude(sr => sr.CropType)
             .Include(c => c.IntegrityAnchors)
+            .Include(c => c.Revisions)
+            .Include(c => c.Fulfillment)
             .FirstOrDefaultAsync(c =>
                 c.ContractId == contractId && c.FarmMatch.Farm.UserId == userId);
 

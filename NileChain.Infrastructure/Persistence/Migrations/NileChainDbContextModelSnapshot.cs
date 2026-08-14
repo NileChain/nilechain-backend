@@ -234,6 +234,15 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("DateAmendmentProposedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DateAmendmentProposedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("EndsAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<DateTime?>("FactorySignedAt")
                         .HasColumnType("datetime2");
 
@@ -256,6 +265,12 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<string>("PdfUrl")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<DateTime?>("PendingEndsAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("PendingStartsAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -263,6 +278,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .HasColumnType("rowversion");
 
                     b.Property<DateTime?>("SignedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("StartsAt")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("Status")
@@ -377,6 +395,47 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_ContractIntegrityAnchor_ContractId_Status");
 
                     b.ToTable("ContractIntegrityAnchor", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractRevision", b =>
+                {
+                    b.Property<Guid>("ContractRevisionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Instructions")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("NewText")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PreviousText")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RevisedByParty")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<Guid>("RevisedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("ContractRevisionId");
+
+                    b.HasIndex("ContractId", "CreatedAt")
+                        .HasDatabaseName("IX_ContractRevision_ContractId_CreatedAt");
+
+                    b.ToTable("ContractRevision", (string)null);
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.CropRequest", b =>
@@ -2084,6 +2143,17 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Contract");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractRevision", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany("Revisions")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.CropRequest", b =>
                 {
                     b.HasOne("NileChain.Domain.Entities.CropType", "ApprovedCropType")
@@ -2527,6 +2597,8 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Fulfillment");
 
                     b.Navigation("IntegrityAnchors");
+
+                    b.Navigation("Revisions");
 
                     b.Navigation("Reviews");
 

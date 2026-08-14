@@ -30,6 +30,8 @@ public static class DependencyInjection
         services.AddScoped<IWalletService, WalletService>();
         services.AddScoped<IDisputeService, DisputeService>();
         services.AddScoped<IContractIntegrityService, ContractIntegrityService>();
+        services.AddScoped<IContractDateAmendmentService, ContractDateAmendmentService>();
+        services.AddScoped<IContractChangeRequestService, ContractChangeRequestService>();
         services.Configure<Options.PaymentMilestoneOptions>(
             configuration.GetSection(Options.PaymentMilestoneOptions.SectionName));
         services.Configure<Options.DeliveryTermsOptions>(

@@ -8,6 +8,7 @@ using NileChain.AI.Agents;
 using NileChain.AI.Matching;
 using NileChain.AI.Models;
 using NileChain.AI.Orchestration;
+using NileChain.Domain.Common;
 using NileChain.Infrastructure.Persistence;
 
 namespace NileChain.AI.Plugins;
@@ -639,6 +640,8 @@ public sealed class OrchestrationToolsPlugin
                 }
             }
 
+            contractText = ContractSignatureText.StripHandwrittenBlocks(contractText);
+
             _state.ContractDraft = contractText;
             _state.ContractIncomplete = false;
             _state.ContractValidationError = null;
@@ -915,27 +918,17 @@ public sealed class OrchestrationToolsPlugin
 
     private static string BuildTemplateContract(string farmName, string factoryName, AgentRequest request)
     {
-        var total = request.QuantityTons * request.PricePerTon;
-        var sb = new StringBuilder();
-        sb.AppendLine("بسم الله الرحمن الرحيم");
-        sb.AppendLine();
-        sb.AppendLine("عقد توريد زراعي (نموذج احتياطي — تم إنشاؤه بدون RAG/LLM)");
-        sb.AppendLine();
-        sb.AppendLine($"الطرف الأول (المورد): {farmName}");
-        sb.AppendLine($"الطرف الثاني (المشتري): {factoryName}");
-        sb.AppendLine($"المحصول: {request.CropType}");
-        sb.AppendLine($"الكمية: {request.QuantityTons:0.##} طن متري");
-        sb.AppendLine($"السعر: {request.PricePerTon:0.##} جنيه/طن");
-        sb.AppendLine($"الإجمالي: {total:0.##} جنيه مصري");
-        sb.AppendLine($"تاريخ التسليم: {request.DeliveryDate:dd MMMM yyyy}");
-        sb.AppendLine($"مواصفات الجودة: {request.QualitySpecs}");
-        sb.AppendLine();
-        sb.AppendLine("شروط الدفع: 30% مقدم، 70% عند الاستلام.");
-        sb.AppendLine("فض النزاعات: محاكم القاهرة الاقتصادية.");
-        sb.AppendLine();
-        sb.AppendLine("توقيع المورد: __________");
-        sb.AppendLine("توقيع المشتري: __________");
-        return sb.ToString();
+        return ContractDraftTemplate.Build(
+            farmName,
+            factoryName,
+            request.CropType,
+            request.QuantityTons,
+            request.PricePerTon,
+            request.DeliveryDate,
+            request.QualitySpecs,
+            request.DeliveryPoint,
+            request.FreightPayer,
+            request.TransitRisk);
     }
 
     private static string Truncate(string? value, int max)

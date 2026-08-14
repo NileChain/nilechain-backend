@@ -1,6 +1,7 @@
 using NileChain.Application.Common;
 using NileChain.Application.Contracts;
 using NileChain.Application.Dtos.Admin;
+using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Dtos.Factory;
 using NileChain.Application.Dtos.Farm;
 using NileChain.Application.Errors;
@@ -1264,7 +1265,7 @@ public class FactoryService : IFactoryService
             {
                 ContractId = Guid.NewGuid(),
                 MatchId = match.MatchId,
-                GeneratedText = request.ContractText,
+                GeneratedText = ContractSignatureText.StripHandwrittenBlocks(request.ContractText),
                 Status = ContractStatus.PendingSignature,
                 CreatedAt = DateTime.UtcNow
             };
@@ -1332,6 +1333,7 @@ public class FactoryService : IFactoryService
         if (contract is null)
             return Result<FactoryContractDto>.Failure(FactoryErrors.ContractNotFound);
 
+        await EnsureTermDatesPersistedAsync(contract);
         return Result<FactoryContractDto>.Success(MapContract(contract));
     }
 
@@ -1392,6 +1394,13 @@ public class FactoryService : IFactoryService
         // FarmSignedAt must remain unchanged.
         contract.RefreshSignatureStatus();
         ContractExecution.AcceptMatchIfFullySigned(contract);
+
+        if (contract.IsFullySigned)
+        {
+            var delivery = MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+                ?? contract.FarmMatch?.SupplyRequest?.DeliveryDate;
+            ContractTermDates.ApplyOnFullSign(contract, delivery);
+        }
 
         if (contract.IsFullySigned && !contract.HasDealFundsHeld)
         {
@@ -1521,18 +1530,53 @@ public class FactoryService : IFactoryService
         if (contract is null)
             return Result<(byte[], string)>.Failure(FactoryErrors.ContractNotFound);
 
-        var text = contract.GeneratedText ?? string.Empty;
-        var farmName = contract.FarmMatch?.Farm?.Name ?? "Farm";
-        var factoryName = contract.FarmMatch?.SupplyRequest?.Factory?.Name ?? factory.Name;
-        var bytes = _pdfService.GeneratePdf(
-            "Agricultural Supply Contract",
-            text,
-            farmName,
-            factoryName,
-            factorySigned: contract.IsFactorySigned,
-            farmSigned: contract.IsFarmSigned,
-            factorySignedAt: contract.FactorySignedAt,
-            farmSignedAt: contract.FarmSignedAt);
+        await EnsureTermDatesPersistedAsync(contract);
+        var startsAt = contract.StartsAt ?? (contract.IsFullySigned ? contract.SignedAt : null);
+        var endsAt = contract.EndsAt
+            ?? (contract.FarmMatch is not null
+                ? MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+                : contract.FarmMatch?.SupplyRequest?.DeliveryDate);
+        var text = ContractTermDates.FillPlaceholders(contract.GeneratedText, startsAt, endsAt)
+            ?? string.Empty;
+        var factoryEntity = contract.FarmMatch?.SupplyRequest?.Factory;
+        var farmEntity = contract.FarmMatch?.Farm;
+        var supply = contract.FarmMatch?.SupplyRequest;
+        var delivery = contract.FarmMatch is not null
+            ? MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+            : supply?.DeliveryDate;
+        var pdfModel = new NileChain.Application.Dtos.Contracts.ContractPdfModel
+        {
+            ContractId = contract.ContractId,
+            Title = "Agricultural Supply Agreement",
+            Status = contract.Status.ToString(),
+            DocumentVersion = "1.0",
+            CreatedAt = contract.CreatedAt,
+            UpdatedAt = contract.SignedAt ?? contract.FarmSignedAt ?? contract.FactorySignedAt ?? contract.CreatedAt,
+            StartsAt = startsAt,
+            EndsAt = endsAt,
+            DeliveryDate = delivery,
+            FactoryName = factoryEntity?.Name ?? factory.Name,
+            FactoryLocation = factoryEntity?.Location ?? factoryEntity?.Governorate,
+            FarmName = farmEntity?.Name ?? "Farm",
+            FarmLocation = farmEntity?.Location ?? farmEntity?.Governorate,
+            CropName = supply?.CropType?.Name ?? string.Empty,
+            QuantityTons = contract.FarmMatch is not null
+                ? MatchCommercialTerms.QuantityTons(contract.FarmMatch)
+                : supply?.QuantityTons ?? 0,
+            PricePerTon = contract.FarmMatch is not null
+                ? MatchCommercialTerms.PricePerTon(contract.FarmMatch)
+                : supply?.PricePerTon,
+            DeliveryLocation = factoryEntity?.Location ?? factoryEntity?.Governorate,
+            QualityRequirements = NileChain.Application.Common.ContractQualitySummary.Format(supply?.QualitySpecs),
+            PaymentTerms = ContractBodyParser.ExtractPaymentTermsHint(text),
+            RiskScore = contract.FarmMatch?.RiskScore,
+            GeneratedText = text,
+            FactorySigned = contract.IsFactorySigned,
+            FarmSigned = contract.IsFarmSigned,
+            FactorySignedAt = contract.FactorySignedAt,
+            FarmSignedAt = contract.FarmSignedAt
+        };
+        var bytes = _pdfService.GeneratePdf(pdfModel);
 
         // Do not persist role-scoped PdfUrl — download endpoints are authoritative.
         return Result<(byte[], string)>.Success((bytes, $"contract-{contract.ContractId:N}.pdf"));
@@ -1581,38 +1625,84 @@ public class FactoryService : IFactoryService
         return Result<FactoryContractDto>.Success(MapContract(contract));
     }
 
-    private static FactoryContractDto MapContract(Contract c) => new()
+    private async Task EnsureTermDatesPersistedAsync(Contract contract)
     {
-        ContractId = c.ContractId,
-        MatchId = c.MatchId,
-        FarmName = c.FarmMatch?.Farm?.Name ?? "Unknown",
-        FarmLocation = c.FarmMatch?.Farm?.Location ?? c.FarmMatch?.Farm?.Governorate,
-        FactoryName = c.FarmMatch?.SupplyRequest?.Factory?.Name ?? "Unknown",
-        CropName = c.FarmMatch?.SupplyRequest?.CropType?.Name,
-        QuantityTons = c.FarmMatch?.SupplyRequest?.QuantityTons ?? 0,
-        PricePerTon = c.FarmMatch?.SupplyRequest?.PricePerTon,
-        DeliveryDate = c.FarmMatch?.SupplyRequest?.DeliveryDate,
-        DeliveryLocation = c.FarmMatch?.SupplyRequest?.Factory?.Location
-            ?? c.FarmMatch?.SupplyRequest?.Factory?.Governorate,
-        GeneratedText = c.GeneratedText,
-        PdfUrl = c.PdfUrl,
-        Status = c.Status.ToString(),
-        CreatedAt = c.CreatedAt,
-        SignedAt = c.SignedAt,
-        FactorySigned = c.IsFactorySigned,
-        FarmSigned = c.IsFarmSigned,
-        FactorySignedAt = c.FactorySignedAt,
-        FarmSignedAt = c.FarmSignedAt,
-        FarmUserId = c.FarmMatch?.Farm?.UserId,
-        FactoryUserId = c.FarmMatch?.SupplyRequest?.Factory?.UserId,
-        CanUnwindSigned = c.Status == ContractStatus.Signed
-            && (c.Fulfillment is null
-                || c.Fulfillment.Status is FulfillmentStatus.Planned or FulfillmentStatus.Shipped),
-        UpdatedAt = c.SignedAt ?? c.FarmSignedAt ?? c.FactorySignedAt ?? c.CreatedAt,
-        MatchScore = c.FarmMatch?.MatchScore,
-        RiskScore = c.FarmMatch?.RiskScore,
-        Integrity = ContractIntegrityService.MapActive(c)
-    };
+        if (!contract.IsFullySigned)
+            return;
+
+        var delivery = contract.FarmMatch is not null
+            ? MatchCommercialTerms.DeliveryDate(contract.FarmMatch)
+            : contract.FarmMatch?.SupplyRequest?.DeliveryDate;
+        var beforeStart = contract.StartsAt;
+        var beforeEnd = contract.EndsAt;
+        var beforeText = contract.GeneratedText;
+
+        ContractTermDates.EnsureApplied(contract, delivery);
+
+        if (contract.StartsAt == beforeStart
+            && contract.EndsAt == beforeEnd
+            && contract.GeneratedText == beforeText)
+        {
+            return;
+        }
+
+        _contractRepository.Update(contract);
+        await _unitOfWork.SaveChangesAsync();
+    }
+
+    private static FactoryContractDto MapContract(Contract c)
+    {
+        var delivery = c.FarmMatch is not null
+            ? MatchCommercialTerms.DeliveryDate(c.FarmMatch)
+            : c.FarmMatch?.SupplyRequest?.DeliveryDate;
+        var startsAt = c.StartsAt ?? (c.IsFullySigned ? c.SignedAt : null);
+        var endsAt = c.EndsAt ?? delivery;
+        return new FactoryContractDto
+        {
+            ContractId = c.ContractId,
+            MatchId = c.MatchId,
+            FarmName = c.FarmMatch?.Farm?.Name ?? "Unknown",
+            FarmLocation = c.FarmMatch?.Farm?.Location ?? c.FarmMatch?.Farm?.Governorate,
+            FactoryName = c.FarmMatch?.SupplyRequest?.Factory?.Name ?? "Unknown",
+            CropName = c.FarmMatch?.SupplyRequest?.CropType?.Name,
+            QuantityTons = c.FarmMatch is not null
+                ? MatchCommercialTerms.QuantityTons(c.FarmMatch)
+                : c.FarmMatch?.SupplyRequest?.QuantityTons ?? 0,
+            PricePerTon = c.FarmMatch is not null
+                ? MatchCommercialTerms.PricePerTon(c.FarmMatch)
+                : c.FarmMatch?.SupplyRequest?.PricePerTon,
+            QualityRequirements = NileChain.Application.Common.ContractQualitySummary.Format(
+                c.FarmMatch?.SupplyRequest?.QualitySpecs),
+            DeliveryDate = delivery,
+            StartsAt = startsAt,
+            EndsAt = endsAt,
+            HasPendingDateAmendment = c.HasPendingDateAmendment,
+            PendingStartsAt = c.PendingStartsAt,
+            PendingEndsAt = c.PendingEndsAt,
+            DateAmendmentProposedByUserId = c.DateAmendmentProposedByUserId,
+            DeliveryLocation = c.FarmMatch?.SupplyRequest?.Factory?.Location
+                ?? c.FarmMatch?.SupplyRequest?.Factory?.Governorate,
+            GeneratedText = ContractTermDates.FillPlaceholders(c.GeneratedText, startsAt, endsAt),
+            PdfUrl = c.PdfUrl,
+            Status = c.Status.ToString(),
+            CreatedAt = c.CreatedAt,
+            SignedAt = c.SignedAt,
+            FactorySigned = c.IsFactorySigned,
+            FarmSigned = c.IsFarmSigned,
+            FactorySignedAt = c.FactorySignedAt,
+            FarmSignedAt = c.FarmSignedAt,
+            FarmUserId = c.FarmMatch?.Farm?.UserId,
+            FactoryUserId = c.FarmMatch?.SupplyRequest?.Factory?.UserId,
+            CanUnwindSigned = c.Status == ContractStatus.Signed
+                && (c.Fulfillment is null
+                    || c.Fulfillment.Status is FulfillmentStatus.Planned or FulfillmentStatus.Shipped),
+            UpdatedAt = c.SignedAt ?? c.FarmSignedAt ?? c.FactorySignedAt ?? c.CreatedAt,
+            MatchScore = c.FarmMatch?.MatchScore,
+            RiskScore = c.FarmMatch?.RiskScore,
+            Integrity = ContractIntegrityService.MapActive(c),
+            LastRevision = ContractRevisionDto.Last(c.Revisions)
+        };
+    }
 
     /// <summary>
     /// Missing User navigation (tests/partial loads) is treated as active; explicit IsActive=false fails.

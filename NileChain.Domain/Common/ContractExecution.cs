@@ -55,7 +55,7 @@ public static class ContractExecution
         if (match.Status == FarmMatchStatus.Accepted)
             match.Status = FarmMatchStatus.Proposed;
 
-        contract.GeneratedText = contractText;
+        contract.GeneratedText = ContractSignatureText.StripHandwrittenBlocks(contractText);
         contract.ClearSignatures();
         contract.Status = ContractStatus.PendingSignature;
         return true;

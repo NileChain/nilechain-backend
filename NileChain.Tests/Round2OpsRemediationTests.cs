@@ -255,6 +255,9 @@ public class Round2OpsRemediationTests
 
     private sealed class FakePdfService : IContractPdfService
     {
+        public byte[] GeneratePdf(NileChain.Application.Dtos.Contracts.ContractPdfModel model) =>
+            Array.Empty<byte>();
+
         public byte[] GeneratePdf(
             string title,
             string contractText,

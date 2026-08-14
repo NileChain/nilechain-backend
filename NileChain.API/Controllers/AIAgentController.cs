@@ -220,7 +220,7 @@ public class AIAgentController : ControllerBase
                     {
                         ContractId = Guid.NewGuid(),
                         MatchId = persistMatchId,
-                        GeneratedText = result.ContractText,
+                        GeneratedText = ContractSignatureText.StripHandwrittenBlocks(result.ContractText),
                         Status = ContractStatus.PendingSignature,
                         CreatedAt = DateTime.UtcNow
                     };
@@ -330,11 +330,11 @@ public class AIAgentController : ControllerBase
 
         var factoryId = await ResolveCallerFactoryIdAsync();
         if (factoryId is null)
-            return Forbid();
+            return OwnershipForbidden();
 
         var owns = await _db.SupplyRequests.AnyAsync(r =>
             r.RequestId == requestId && r.FactoryId == factoryId.Value);
-        return owns ? null : Forbid();
+        return owns ? null : OwnershipForbidden();
     }
 
     private async Task<IActionResult?> EnsureMatchOwnershipAsync(Guid matchId)
@@ -344,12 +344,22 @@ public class AIAgentController : ControllerBase
 
         var factoryId = await ResolveCallerFactoryIdAsync();
         if (factoryId is null)
-            return Forbid();
+            return OwnershipForbidden();
 
         var owns = await _db.FarmMatches.AnyAsync(m =>
             m.MatchId == matchId && m.SupplyRequest.FactoryId == factoryId.Value);
-        return owns ? null : Forbid();
+        return owns ? null : OwnershipForbidden();
     }
+
+    private static IActionResult OwnershipForbidden() =>
+        new ObjectResult(new
+        {
+            code = "Factory.Forbidden",
+            message = "You do not have access to generate a contract for this match or request."
+        })
+        {
+            StatusCode = StatusCodes.Status403Forbidden
+        };
 
     private bool IsElevatedAdmin() =>
         User.IsInRole("Admin") || User.IsInRole("SuperAdmin");

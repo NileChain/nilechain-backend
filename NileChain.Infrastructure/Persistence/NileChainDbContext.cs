@@ -19,6 +19,7 @@ public class NileChainDbContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<SupplyRequest> SupplyRequests => Set<SupplyRequest>();
     public DbSet<FarmMatch> FarmMatches => Set<FarmMatch>();
     public DbSet<Contract> Contracts => Set<Contract>();
+    public DbSet<ContractRevision> ContractRevisions => Set<ContractRevision>();
     public DbSet<ContractAttachment> ContractAttachments => Set<ContractAttachment>();
     public DbSet<ContractIntegrityAnchor> ContractIntegrityAnchors => Set<ContractIntegrityAnchor>();
     public DbSet<Fulfillment> Fulfillments => Set<Fulfillment>();

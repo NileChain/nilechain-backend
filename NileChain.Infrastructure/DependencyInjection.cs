@@ -121,12 +121,17 @@ public static class DependencyInjection
         services.AddScoped<IEscrowTransactionRepository, EscrowTransactionRepository>();
         services.AddScoped<IWalletRepository, WalletRepository>();
         services.AddScoped<IDisputeRepository, DisputeRepository>();
+        services.AddScoped<IChannelMessageRepository, ChannelMessageRepository>();
         services.AddScoped<IContractIntegrityRepository, ContractIntegrityRepository>();
+        services.AddScoped<ISigningOtpRepository, SigningOtpRepository>();
+        services.AddScoped<IContractSignatureRepository, ContractSignatureRepository>();
         services.AddScoped<IAdminAnalyticsRepository, AdminAnalyticsRepository>();
         services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+        services.AddScoped<ISubscriptionRepository, SubscriptionRepository>();
         services.AddScoped<ITemplateRenderer, TemplateRendererService>();
         services.AddScoped<ITokenService, JwtTokenService>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+        services.AddScoped<IUserAccountDeletionService, UserAccountDeletionService>();
 
         services.AddHttpClient<IPaymobClient, NileChain.Infrastructure.Paymob.PaymobClient>();
 

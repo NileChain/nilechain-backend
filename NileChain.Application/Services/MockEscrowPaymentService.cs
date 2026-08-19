@@ -5,6 +5,7 @@ using NileChain.Application.Contracts;
 using NileChain.Application.Dtos.Payment;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
 using NileChain.Application.Options;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -20,6 +21,11 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
     public const string WalletDisclaimer =
         "Pay from NileChain wallet (top up via Paymob sandbox). Milestone + platform fee held in escrow; farm receives net in their wallet on release.";
 
+    public const string PaymobDisclaimer =
+        "Sandbox Paymob-on-milestone — webhook (or simulator) is the only paid truth. Not live merchant settlement.";
+
+    public const string EscrowSpecialPrefix = "escrow:";
+
     private readonly IEscrowTransactionRepository _escrows;
     private readonly IPaymentMilestoneRepository _milestones;
     private readonly IDisputeRepository _disputes;
@@ -32,6 +38,8 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
     private readonly IPaymentMilestoneService _paymentMilestones;
     private readonly IWalletService _wallets;
     private readonly MockPaymentOptions _options;
+    private readonly PaymobOptions _paymobOptions;
+    private readonly IPaymobClient? _paymob;
     private readonly ILogger<MockEscrowPaymentService> _logger;
 
     public MockEscrowPaymentService(
@@ -47,7 +55,9 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         IPaymentMilestoneService paymentMilestones,
         IWalletService wallets,
         IOptions<MockPaymentOptions> options,
-        ILogger<MockEscrowPaymentService> logger)
+        ILogger<MockEscrowPaymentService> logger,
+        IPaymobClient? paymob = null,
+        IOptions<PaymobOptions>? paymobOptions = null)
     {
         _escrows = escrows;
         _milestones = milestones;
@@ -62,18 +72,31 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         _wallets = wallets;
         _options = options.Value;
         _logger = logger;
+        _paymob = paymob;
+        _paymobOptions = paymobOptions?.Value ?? new PaymobOptions();
     }
 
     public bool IsMockGatewayEnabled => _options.MockGatewayEnabled;
+    public bool IsGatewayEnabled => _options.GatewayEnabled;
 
     public decimal PlatformFeePercent =>
         _options.PlatformFeePercent < 0 ? 0 : Math.Min(_options.PlatformFeePercent, 30m);
 
     private bool UseWallet => _options.WalletEnabled;
 
-    private string ActiveDisclaimer => UseWallet ? WalletDisclaimer : MockDisclaimer;
+    private string ActiveDisclaimer =>
+        _options.GatewayEnabled
+            ? PaymobDisclaimer
+            : UseWallet ? WalletDisclaimer : MockDisclaimer;
 
-    private string ActiveGateway => UseWallet ? "Wallet" : "Mock";
+    private string ActiveGateway =>
+        _options.GatewayEnabled
+            ? (_paymob?.IsConfigured == true ? "Paymob" : "PaymobSimulator")
+            : UseWallet ? "Wallet" : "Mock";
+
+    private bool IsPaymobPath => _options.GatewayEnabled;
+
+    private bool PaymentsOn => _options.MockGatewayEnabled || _options.GatewayEnabled;
 
     public async Task<Result<MockEscrowSessionDto>> CreateSessionAsync(
         Guid factoryUserId,
@@ -81,7 +104,7 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         Guid transactionId,
         string? idempotencyKey = null)
     {
-        if (!_options.MockGatewayEnabled)
+        if (!PaymentsOn)
             return Result<MockEscrowSessionDto>.Failure(MockEscrowErrors.GatewayDisabled);
 
         var access = await EnsureFactoryContractAsync(factoryUserId, contractId);
@@ -90,7 +113,7 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
 
         var contract = access.Value;
         if (contract.Status != ContractStatus.Signed || !contract.IsFullySigned)
-            return Result<MockEscrowSessionDto>.Failure(PaymentMilestoneErrors.ContractNotSigned);
+            return Result<MockEscrowSessionDto>.Failure(MockEscrowErrors.ContractNotSignedConflict);
 
         if (await _disputes.HasActiveDisputeAsync(contractId))
             return Result<MockEscrowSessionDto>.Failure(PaymentMilestoneErrors.FrozenByDispute);
@@ -129,12 +152,41 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
             TotalChargedEgp = total,
             FarmNetEgp = milestone.Amount,
             Currency = "EGP",
-            Status = EscrowStatus.Created,
+            Status = IsPaymobPath ? EscrowStatus.Pending : EscrowStatus.Created,
             IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey.Trim(),
             Gateway = ActiveGateway,
             CreatedAt = now,
             UpdatedAt = now
         };
+
+        if (IsPaymobPath && _paymob?.IsConfigured == true)
+        {
+            var apiBase = ResolvePublicApiBase();
+            var special = EscrowSpecialPrefix + escrow.EscrowTransactionId.ToString("N");
+            var intention = await _paymob.CreateIntentionAsync(new PaymobIntentionRequest
+            {
+                AmountEgp = escrow.TotalChargedEgp,
+                SpecialReference = special,
+                NotificationUrl = $"{apiBase}/api/webhooks/paymob",
+                RedirectionUrl = $"{apiBase}/",
+                ItemName = "NileChain milestone escrow",
+                ExtraKind = "nilechain_escrow"
+            });
+            if (!intention.Success)
+            {
+                escrow.Status = EscrowStatus.Failed;
+                escrow.FailedAt = now;
+                escrow.FailReason = intention.Error;
+            }
+            else
+            {
+                escrow.PaymobOrderId = intention.OrderId;
+            }
+
+            await _escrows.AddAsync(escrow);
+            await _unitOfWork.SaveChangesAsync();
+            return Result<MockEscrowSessionDto>.Success(MapSession(escrow, milestone.Label, intention.CheckoutUrl));
+        }
 
         await _escrows.AddAsync(escrow);
         await _unitOfWork.SaveChangesAsync();
@@ -154,6 +206,9 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         Guid contractId,
         Guid escrowTransactionId)
     {
+        if (IsPaymobPath)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.WebhookRequiredConflict);
+
         if (!_options.MockGatewayEnabled)
             return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.GatewayDisabled);
 
@@ -161,98 +216,100 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         if (access.IsFailure)
             return Result<PaymentMilestoneScheduleDto>.Failure(access.Error!);
 
-        var contract = access.Value;
-        if (await _disputes.HasActiveDisputeAsync(contractId))
-            return Result<PaymentMilestoneScheduleDto>.Failure(PaymentMilestoneErrors.FrozenByDispute);
+        return await MarkEscrowHeldAsync(
+            factoryUserId,
+            contractId,
+            escrowTransactionId,
+            debitWallet: UseWallet,
+            paymobTxnId: null,
+            orderId: null);
+    }
 
-        var escrow = await _escrows.GetByIdAsync(escrowTransactionId, tracking: true);
-        if (escrow is null || escrow.ContractId != contractId)
+    public async Task<Result<PaymentMilestoneScheduleDto>> CompleteSimulatorAsync(
+        Guid factoryUserId,
+        Guid contractId,
+        Guid escrowTransactionId)
+    {
+        if (!IsPaymobPath)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.GatewayDisabled);
+
+        if (_paymob?.IsConfigured == true && !_paymobOptions.AllowLocalSimulator)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.WebhookRequiredConflict);
+
+        var access = await EnsureFactoryContractAsync(factoryUserId, contractId);
+        if (access.IsFailure)
+            return Result<PaymentMilestoneScheduleDto>.Failure(access.Error!);
+
+        return await MarkEscrowHeldAsync(
+            factoryUserId,
+            contractId,
+            escrowTransactionId,
+            debitWallet: false,
+            paymobTxnId: "sim-" + escrowTransactionId.ToString("N")[..12],
+            orderId: null);
+    }
+
+    public async Task<Result<PaymentMilestoneScheduleDto>> ApplyPaymobEscrowWebhookAsync(
+        string specialReference,
+        string? paymobTransactionId,
+        string? orderId,
+        bool success)
+    {
+        if (!TryParseEscrowSpecial(specialReference, out var escrowId))
             return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.NotFound);
 
-        if (escrow.Status is EscrowStatus.Held or EscrowStatus.Released)
-            return await _paymentMilestones.GetByContractAsync(factoryUserId, contractId, asFarm: false);
-
-        if (escrow.Status is not (EscrowStatus.Created or EscrowStatus.Pending))
-            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.InvalidState);
-
-        var milestone = await _milestones.GetByIdAsync(escrow.TransactionId, includeEvents: false);
-        if (milestone is null || milestone.Status != TransactionStatus.Pending)
-            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.MilestoneNotPayable);
-
-        await using var dbTx = await _unitOfWork.BeginTransactionAsync();
-        var now = DateTime.UtcNow;
-
-        if (UseWallet)
+        if (!string.IsNullOrWhiteSpace(paymobTransactionId))
         {
-            // Full deal was already held at contract full-sign — do not debit Available again.
-            if (!contract.HasDealFundsHeld)
+            var byTxn = await _escrows.GetByPaymobTransactionIdAsync(paymobTransactionId);
+            if (byTxn is not null && byTxn.Status is EscrowStatus.Held or EscrowStatus.Released)
             {
-                var hold = await _wallets.HoldForEscrowAsync(
-                    escrow.FactoryId,
-                    escrow.TotalChargedEgp,
-                    escrow.EscrowTransactionId,
-                    $"Escrow hold for '{milestone.Label}'");
-                if (hold.IsFailure)
-                    return Result<PaymentMilestoneScheduleDto>.Failure(hold.Error!);
-
-                escrow.FundingLedgerEntryId = hold.Value;
+                var factory = await _factories.GetByIdAsync(byTxn.FactoryId);
+                var actor = factory?.UserId ?? Guid.Empty;
+                return await _paymentMilestones.GetByContractAsync(actor, byTxn.ContractId, asFarm: false);
             }
-
-            escrow.UpdatedAt = now;
         }
 
-        var heldOk = await _escrows.TryAtomicStatusAsync(
-            escrow.EscrowTransactionId,
-            escrow.Status,
-            EscrowStatus.Held,
-            now);
-        if (!heldOk)
-            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.Conflict);
+        var escrow = await _escrows.GetByIdAsync(escrowId, tracking: true);
+        if (escrow is null)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.NotFound);
 
-        var milestoneOk = await _milestones.TryAtomicTransitionAsync(
-            escrow.TransactionId,
-            TransactionStatus.Pending,
-            TransactionStatus.EscrowHeld,
-            now,
-            requireNoActiveDispute: true);
-        if (!milestoneOk)
+        var owner = await _factories.GetByIdAsync(escrow.FactoryId);
+        var factoryUserId = owner?.UserId ?? Guid.Empty;
+
+        if (!success)
         {
-            var frozen = await _disputes.HasActiveDisputeAsync(contractId);
-            return Result<PaymentMilestoneScheduleDto>.Failure(
-                frozen ? PaymentMilestoneErrors.FrozenByDispute : MockEscrowErrors.Conflict);
+            await _escrows.TryAtomicStatusAsync(
+                escrow.EscrowTransactionId,
+                escrow.Status,
+                EscrowStatus.Failed,
+                DateTime.UtcNow,
+                "Paymob webhook success=false");
+            await _unitOfWork.SaveChangesAsync();
+            return await _paymentMilestones.GetByContractAsync(factoryUserId, escrow.ContractId, asFarm: false);
         }
 
-        await _milestones.AddEventAsync(new TransactionEvent
-        {
-            EventId = Guid.NewGuid(),
-            TransactionId = escrow.TransactionId,
-            FromStatus = TransactionStatus.Pending,
-            ToStatus = TransactionStatus.EscrowHeld,
-            ActorUserId = factoryUserId,
-            Note = UseWallet
-                ? $"Wallet pay held. Debited {escrow.TotalChargedEgp:0.00} EGP " +
-                  $"(milestone {escrow.MilestoneAmountEgp:0.00} + platform fee {escrow.PlatformFeeEgp:0.00} @ {escrow.PlatformFeePercent:0.##}%)."
-                : $"Mock pay held. Charged {escrow.TotalChargedEgp:0.00} EGP " +
-                  $"(milestone {escrow.MilestoneAmountEgp:0.00} + platform fee {escrow.PlatformFeeEgp:0.00} @ {escrow.PlatformFeePercent:0.##}%). Demo only.",
-            CreatedAt = now
-        });
+        if (escrow.Status is EscrowStatus.Held or EscrowStatus.Released)
+            return await _paymentMilestones.GetByContractAsync(factoryUserId, escrow.ContractId, asFarm: false);
 
-        await NotifyAsync(
-            contract,
+        return await MarkEscrowHeldAsync(
             factoryUserId,
-            actorIsFarm: false,
-            title: UseWallet ? "Payment held in escrow" : "Mock payment held in escrow",
-            type: "EscrowHeld",
-            message: UseWallet
-                ? $"Factory paid '{milestone.Label}' from NileChain wallet. " +
-                  $"Platform fee {escrow.PlatformFeeEgp:0.00} EGP. Funds held until release."
-                : $"Factory paid '{milestone.Label}' via demo escrow. " +
-                  $"Platform fee {escrow.PlatformFeeEgp:0.00} EGP. Funds simulated as held until release.");
+            escrow.ContractId,
+            escrow.EscrowTransactionId,
+            debitWallet: false,
+            paymobTxnId: paymobTransactionId,
+            orderId: orderId);
+    }
 
-        await _unitOfWork.SaveChangesAsync();
-        await dbTx.CommitAsync();
-
-        return await _paymentMilestones.GetByContractAsync(factoryUserId, contractId, asFarm: false);
+    public async Task<Result<EscrowReconciliationDto>> ListReconciliationAsync()
+    {
+        var rows = await _escrows.ListForReconciliationAsync();
+        return Result<EscrowReconciliationDto>.Success(new EscrowReconciliationDto
+        {
+            PendingCount = rows.Count(e => e.Status == EscrowStatus.Pending),
+            HeldCount = rows.Count(e => e.Status == EscrowStatus.Held),
+            FailedCount = rows.Count(e => e.Status == EscrowStatus.Failed),
+            Items = rows.Select(MapEscrow).ToList()
+        });
     }
 
     public async Task<Result<PaymentMilestoneScheduleDto>> ConfirmReleaseAsync(
@@ -260,7 +317,7 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         Guid contractId,
         Guid escrowTransactionId)
     {
-        if (!_options.MockGatewayEnabled)
+        if (!PaymentsOn)
             return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.GatewayDisabled);
 
         var access = await EnsureFactoryContractAsync(factoryUserId, contractId);
@@ -292,7 +349,7 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         var now = DateTime.UtcNow;
         const string reason = "Factory confirmed escrow release";
 
-        if (UseWallet)
+        if (UseWallet && !IsPaymobGateway(escrow.Gateway))
         {
             var releaseWallet = await _wallets.ReleaseEscrowToFarmAsync(
                 escrow.FactoryId,
@@ -379,7 +436,7 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
         var now = DateTime.UtcNow;
         var note = string.IsNullOrWhiteSpace(reason) ? "Admin escrow refund" : reason.Trim();
 
-        if (UseWallet)
+        if (UseWallet && !IsPaymobGateway(escrow.Gateway))
         {
             var refundWallet = await _wallets.RefundEscrowHoldAsync(
                 escrow.FactoryId,
@@ -671,7 +728,12 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
             factoryId = any?.FactoryId;
         }
 
-        if (UseWallet && factoryId is Guid fid && fid != Guid.Empty)
+        var escrow = await _escrows.GetActiveByTransactionIdAsync(transactionId);
+
+        if (UseWallet
+            && factoryId is Guid fid
+            && fid != Guid.Empty
+            && (escrow is null || !IsPaymobGateway(escrow.Gateway)))
         {
             var walletRefund = await _wallets.RefundHeldAmountAsync(
                 fid,
@@ -685,7 +747,6 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
 
         await ReduceFundsHeldAsync(contract, refund);
 
-        var escrow = await _escrows.GetActiveByTransactionIdAsync(transactionId);
         if (escrow is not null
             && escrow.Status is EscrowStatus.Created or EscrowStatus.Pending or EscrowStatus.Held)
         {
@@ -883,12 +944,165 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
             Title = title,
             Message = message,
             Type = type,
+            RelatedEntityType = NotificationRelations.Contract,
+            RelatedEntityId = contract.ContractId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         });
     }
 
-    private MockEscrowSessionDto MapSession(EscrowTransaction e, string label) =>
+    private async Task<Result<PaymentMilestoneScheduleDto>> MarkEscrowHeldAsync(
+        Guid factoryUserId,
+        Guid contractId,
+        Guid escrowTransactionId,
+        bool debitWallet,
+        string? paymobTxnId,
+        string? orderId)
+    {
+        Contract? contract;
+        if (factoryUserId == Guid.Empty)
+        {
+            contract = await _contracts.GetByIdAsync(contractId);
+            if (contract is null)
+                return Result<PaymentMilestoneScheduleDto>.Failure(PaymentMilestoneErrors.ContractNotFound);
+        }
+        else
+        {
+            var contractResult = await EnsureFactoryContractAsync(factoryUserId, contractId);
+            if (contractResult.IsFailure)
+                return Result<PaymentMilestoneScheduleDto>.Failure(contractResult.Error!);
+            contract = contractResult.Value;
+        }
+        if (await _disputes.HasActiveDisputeAsync(contractId))
+            return Result<PaymentMilestoneScheduleDto>.Failure(PaymentMilestoneErrors.FrozenByDispute);
+
+        var escrow = await _escrows.GetByIdAsync(escrowTransactionId, tracking: true);
+        if (escrow is null || escrow.ContractId != contractId)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.NotFound);
+
+        if (escrow.Status is EscrowStatus.Held or EscrowStatus.Released)
+            return await _paymentMilestones.GetByContractAsync(factoryUserId, contractId, asFarm: false);
+
+        if (escrow.Status is not (EscrowStatus.Created or EscrowStatus.Pending))
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.InvalidState);
+
+        var milestone = await _milestones.GetByIdAsync(escrow.TransactionId, includeEvents: false);
+        if (milestone is null || milestone.Status != TransactionStatus.Pending)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.MilestoneNotPayable);
+
+        await using var dbTx = await _unitOfWork.BeginTransactionAsync();
+        var now = DateTime.UtcNow;
+
+        if (debitWallet && UseWallet)
+        {
+            if (!contract.HasDealFundsHeld)
+            {
+                var hold = await _wallets.HoldForEscrowAsync(
+                    escrow.FactoryId,
+                    escrow.TotalChargedEgp,
+                    escrow.EscrowTransactionId,
+                    $"Escrow hold for '{milestone.Label}'");
+                if (hold.IsFailure)
+                    return Result<PaymentMilestoneScheduleDto>.Failure(hold.Error!);
+
+                escrow.FundingLedgerEntryId = hold.Value;
+            }
+
+            escrow.UpdatedAt = now;
+        }
+
+        if (!string.IsNullOrWhiteSpace(paymobTxnId))
+            escrow.PaymobTransactionId = paymobTxnId.Trim();
+        if (!string.IsNullOrWhiteSpace(orderId))
+            escrow.PaymobOrderId = orderId.Trim();
+        escrow.UpdatedAt = now;
+        await _escrows.UpdateAsync(escrow);
+
+        var heldOk = await _escrows.TryAtomicStatusAsync(
+            escrow.EscrowTransactionId,
+            escrow.Status,
+            EscrowStatus.Held,
+            now);
+        if (!heldOk)
+            return Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.Conflict);
+
+        // ExecuteUpdate bypasses the tracker; keep the in-memory row aligned so
+        // the following SaveChanges does not write Pending/Created back over Held.
+        escrow.Status = EscrowStatus.Held;
+        escrow.HeldAt = now;
+        escrow.UpdatedAt = now;
+
+        var milestoneOk = await _milestones.TryAtomicTransitionAsync(
+            escrow.TransactionId,
+            TransactionStatus.Pending,
+            TransactionStatus.EscrowHeld,
+            now,
+            requireNoActiveDispute: true);
+        if (!milestoneOk)
+        {
+            var frozen = await _disputes.HasActiveDisputeAsync(contractId);
+            return Result<PaymentMilestoneScheduleDto>.Failure(
+                frozen ? PaymentMilestoneErrors.FrozenByDispute : MockEscrowErrors.Conflict);
+        }
+
+        await _milestones.AddEventAsync(new TransactionEvent
+        {
+            EventId = Guid.NewGuid(),
+            TransactionId = escrow.TransactionId,
+            FromStatus = TransactionStatus.Pending,
+            ToStatus = TransactionStatus.EscrowHeld,
+            ActorUserId = factoryUserId == Guid.Empty ? escrow.FactoryId : factoryUserId,
+            Note = debitWallet && UseWallet
+                ? $"Wallet pay held. Debited {escrow.TotalChargedEgp:0.00} EGP "
+                  + $"(milestone {escrow.MilestoneAmountEgp:0.00} + platform fee {escrow.PlatformFeeEgp:0.00} @ {escrow.PlatformFeePercent:0.##}%)."
+                : $"Paymob sandbox held. Charged {escrow.TotalChargedEgp:0.00} EGP "
+                  + $"(milestone {escrow.MilestoneAmountEgp:0.00} + platform fee {escrow.PlatformFeeEgp:0.00} @ {escrow.PlatformFeePercent:0.##}%). Webhook/simulator truth.",
+            CreatedAt = now
+        });
+
+        await NotifyAsync(
+            contract,
+            factoryUserId == Guid.Empty ? escrow.FactoryId : factoryUserId,
+            actorIsFarm: false,
+            title: "Payment held in escrow",
+            type: "EscrowHeld",
+            message:
+                $"Factory paid '{milestone.Label}'. Platform fee {escrow.PlatformFeeEgp:0.00} EGP. Funds held until release.");
+
+        await _unitOfWork.SaveChangesAsync();
+        await dbTx.CommitAsync();
+
+        return await _paymentMilestones.GetByContractAsync(factoryUserId, contractId, asFarm: false);
+    }
+
+    public static bool TryParseEscrowSpecial(string? specialReference, out Guid escrowId)
+    {
+        escrowId = Guid.Empty;
+        if (string.IsNullOrWhiteSpace(specialReference))
+            return false;
+        var special = specialReference.Trim();
+        if (!special.StartsWith(EscrowSpecialPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+        var hex = special[EscrowSpecialPrefix.Length..];
+        return Guid.TryParseExact(hex, "N", out escrowId) || Guid.TryParse(hex, out escrowId);
+    }
+
+    private static bool IsPaymobGateway(string? gateway) =>
+        string.Equals(gateway, "Paymob", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(gateway, "PaymobSimulator", StringComparison.OrdinalIgnoreCase);
+
+    private string ResolvePublicApiBase()
+    {
+        var configured = _paymobOptions.PublicApiBaseUrl;
+        if (!string.IsNullOrWhiteSpace(configured))
+            return configured.TrimEnd('/');
+        return "http://localhost:5190";
+    }
+
+    private MockEscrowSessionDto MapSession(
+        EscrowTransaction e,
+        string label,
+        string? checkoutUrl = null) =>
         new()
         {
             EscrowTransactionId = e.EscrowTransactionId,
@@ -903,6 +1117,8 @@ public sealed class MockEscrowPaymentService : IMockEscrowPaymentService
             Currency = e.Currency,
             Status = e.Status.ToString(),
             Gateway = e.Gateway,
+            CheckoutUrl = checkoutUrl,
+            SimulatorAvailable = IsPaymobPath && (_paymob?.IsConfigured != true || _paymobOptions.AllowLocalSimulator),
             Disclaimer = ActiveDisclaimer
         };
 

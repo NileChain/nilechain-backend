@@ -22,6 +22,9 @@ namespace NileChain.API.Controllers
         private readonly IFulfillmentService _fulfillmentService;
         private readonly IDisputeService _disputeService;
         private readonly IMockEscrowPaymentService _mockEscrowPaymentService;
+        private readonly IWalletService _wallets;
+        private readonly IOutboundChannel _outbound;
+        private readonly ISubscriptionService _subscriptions;
 
         public AdminController(
             IAdminService adminService,
@@ -29,7 +32,10 @@ namespace NileChain.API.Controllers
             ILogger<AdminController> logger,
             IFulfillmentService fulfillmentService,
             IDisputeService disputeService,
-            IMockEscrowPaymentService mockEscrowPaymentService)
+            IMockEscrowPaymentService mockEscrowPaymentService,
+            IWalletService wallets,
+            IOutboundChannel outbound,
+            ISubscriptionService subscriptions)
         {
             _adminService = adminService;
             _proactiveMonitor = proactiveMonitor;
@@ -37,6 +43,9 @@ namespace NileChain.API.Controllers
             _fulfillmentService = fulfillmentService;
             _disputeService = disputeService;
             _mockEscrowPaymentService = mockEscrowPaymentService;
+            _wallets = wallets;
+            _outbound = outbound;
+            _subscriptions = subscriptions;
         }
 
         [HttpGet("fulfillments/stuck")]
@@ -193,6 +202,15 @@ namespace NileChain.API.Controllers
             }
         }
 
+        [HttpPut("users/{id:guid}/subscription")]
+        public async Task<IActionResult> SetUserSubscription(
+            Guid id,
+            [FromBody] NileChain.Application.Dtos.Billing.AdminSubscriptionGrantRequest request)
+        {
+            var result = await _subscriptions.AdminGrantAsync(id, request.PlanCode, request.PeriodEndUtc);
+            return result.ToActionResult();
+        }
+
         [HttpPut("users/{id:guid}")]
         public async Task<IActionResult> UpdateUser(Guid id, [FromBody] UpdateUserRequest request)
         {
@@ -210,11 +228,134 @@ namespace NileChain.API.Controllers
         [HttpPut("users/{id:guid}/verify")]
         public async Task<IActionResult> VerifyUser(Guid id)
         {
-            var result = await _adminService.VerifyUserAsync(id);
-            if (result.IsFailure)
-                return result.ToActionResult();
+            var result = await _adminService.AnalyzeKybAsync(id);
+            return result.ToActionResult();
+        }
 
-            return Ok();
+        [HttpPost("users/{id:guid}/kyb/analyze")]
+        public async Task<IActionResult> AnalyzeKyb(Guid id)
+        {
+            var result = await _adminService.AnalyzeKybAsync(id);
+            return result.ToActionResult();
+        }
+
+        [HttpGet("users/{id:guid}/kyb/report")]
+        public async Task<IActionResult> GetLastKybReport(Guid id)
+        {
+            var result = await _adminService.GetLastKybReportAsync(id);
+            return result.ToActionResult();
+        }
+
+        [HttpPut("users/{id:guid}/approve")]
+        public async Task<IActionResult> ApproveUser(Guid id, [FromBody] KybDecisionRequest? request)
+        {
+            var adminId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (adminId is null)
+                return Unauthorized();
+
+            var result = await _adminService.ApproveUserAsync(Guid.Parse(adminId), id, request?.Reason);
+            return result.IsSuccess ? NoContent() : result.ToActionResult();
+        }
+
+        [HttpPut("users/{id:guid}/request-info")]
+        public async Task<IActionResult> RequestKybInfo(Guid id, [FromBody] KybDecisionRequest? request)
+        {
+            var adminId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (adminId is null)
+                return Unauthorized();
+
+            var result = await _adminService.RequestKybInfoAsync(
+                Guid.Parse(adminId),
+                id,
+                request?.Reason ?? string.Empty);
+            return result.IsSuccess ? NoContent() : result.ToActionResult();
+        }
+
+        [HttpGet("farms/{farmId:guid}/hygiene")]
+        public async Task<IActionResult> GetFarmHygiene(Guid farmId)
+        {
+            var result = await _adminService.GetFarmHygieneAsync(farmId);
+            return result.ToActionResult();
+        }
+
+        [HttpGet("factories/{factoryId:guid}/hygiene")]
+        public async Task<IActionResult> GetFactoryHygiene(Guid factoryId)
+        {
+            var result = await _adminService.GetFactoryHygieneAsync(factoryId);
+            return result.ToActionResult();
+        }
+
+        [HttpGet("ops-badges")]
+        public async Task<IActionResult> GetOpsBadges(CancellationToken cancellationToken)
+        {
+            var result = await _adminService.GetOpsBadgesAsync(cancellationToken);
+            return result.ToActionResult();
+        }
+
+        [HttpPost("farms/{farmId:guid}/certifications")]
+        public async Task<IActionResult> GrantFarmCertification(
+            Guid farmId,
+            [FromBody] NileChain.Application.Dtos.Admin.GrantFarmCertificationRequest request)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId is null)
+                return Unauthorized();
+
+            var result = await _adminService.GrantFarmCertificationAsync(
+                Guid.Parse(userId), farmId, request);
+            return result.IsSuccess ? NoContent() : result.ToActionResult();
+        }
+
+        [HttpDelete("farms/{farmId:guid}/certifications/{certificationId:guid}")]
+        public async Task<IActionResult> RevokeFarmCertification(Guid farmId, Guid certificationId)
+        {
+            var result = await _adminService.RevokeFarmCertificationAsync(farmId, certificationId);
+            return result.IsSuccess ? NoContent() : result.ToActionResult();
+        }
+
+        [HttpGet("escrow/reconciliation")]
+        public async Task<IActionResult> EscrowReconciliation()
+        {
+            var result = await _mockEscrowPaymentService.ListReconciliationAsync();
+            return result.ToActionResult();
+        }
+
+        [HttpGet("channel-messages")]
+        public async Task<IActionResult> ListChannelMessages(
+            [FromQuery] string? status,
+            [FromQuery] int take = 100)
+        {
+            var result = await _outbound.ListForAdminAsync(status, take);
+            return result.ToActionResult();
+        }
+
+        [HttpGet("withdrawals")]
+        public async Task<IActionResult> ListWithdrawals([FromQuery] string? status)
+        {
+            var result = await _wallets.ListWithdrawalsForAdminAsync(status);
+            return result.ToActionResult();
+        }
+
+        [HttpPost("withdrawals/{id:guid}/complete")]
+        public async Task<IActionResult> CompleteWithdrawal(Guid id)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId is null)
+                return Unauthorized();
+            var result = await _wallets.CompleteWithdrawalAsync(Guid.Parse(userId), id);
+            return result.ToActionResult();
+        }
+
+        [HttpPost("withdrawals/{id:guid}/reject")]
+        public async Task<IActionResult> RejectWithdrawal(
+            Guid id,
+            [FromBody] NileChain.Application.Dtos.Wallet.AdminWithdrawalRejectRequest? body)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (userId is null)
+                return Unauthorized();
+            var result = await _wallets.RejectWithdrawalAsync(Guid.Parse(userId), id, body?.Reason);
+            return result.ToActionResult();
         }
 
         [HttpPut("users/{id:guid}/block")]
@@ -247,10 +388,38 @@ namespace NileChain.API.Controllers
             return Ok();
         }
 
+        [HttpPut("users/{id:guid}/reject")]
+        public async Task<IActionResult> RejectUser(Guid id, [FromBody] KybDecisionRequest? request)
+        {
+            var adminId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (adminId is null)
+                return Unauthorized();
+
+            var result = await _adminService.RejectUserAsync(
+                Guid.Parse(adminId),
+                id,
+                request?.Reason ?? string.Empty);
+            return result.IsSuccess ? NoContent() : result.ToActionResult();
+        }
+
         [HttpPut("users/{id:guid}/reactivate")]
         public async Task<IActionResult> ReactivateUser(Guid id)
         {
             var result = await _adminService.ReactivateUserAsync(id);
+            if (result.IsFailure)
+                return result.ToActionResult();
+
+            return Ok();
+        }
+
+        [HttpPut("users/{id:guid}/delete")]
+        public async Task<IActionResult> DeleteUser(Guid id)
+        {
+            var actorId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (actorId is not null && Guid.TryParse(actorId, out var actorGuid) && actorGuid == id)
+                return BadRequest(new { code = "Admin.CannotDeleteSelf", message = "Admin cannot delete their own account." });
+
+            var result = await _adminService.DeleteUserAsync(id);
             if (result.IsFailure)
                 return result.ToActionResult();
 

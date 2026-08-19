@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using NileChain.AI.Agents;
+using NileChain.AI.Contracts;
 using NileChain.AI.Matching;
 using NileChain.AI.Models;
 using NileChain.AI.Orchestration;
@@ -112,6 +113,7 @@ public sealed class OrchestrationToolsPlugin
             _state.LastSearchResults = matches;
             _state.LastTotalEligible = search.TotalEligible;
             _state.LastTruncatedCount = search.TruncatedCount;
+            _state.PeekHint = search.PeekHint;
             MergeIntoRanked(matches, effective);
 
             if (matches.Count == 0
@@ -167,6 +169,7 @@ public sealed class OrchestrationToolsPlugin
                 partialResult = _state.PartialResult,
                 partialReason = _state.PartialReason,
                 hint,
+                peekHint = search.PeekHint,
                 farms = matches.Select(m => new
                 {
                     m.FarmId,
@@ -177,7 +180,8 @@ public sealed class OrchestrationToolsPlugin
                     m.RiskLevel,
                     m.IsVerified,
                     m.DistanceKm,
-                    m.UsedGovernorateFallback
+                    m.UsedGovernorateFallback,
+                    m.IsGeographicExpansion
                 })
             }, JsonOptions);
         }
@@ -868,53 +872,8 @@ public sealed class OrchestrationToolsPlugin
         AgentRequest request,
         string farmName,
         string factoryName,
-        out string? error)
-    {
-        error = null;
-        if (string.IsNullOrWhiteSpace(contractText))
-        {
-            error = "Contract text is empty.";
-            return false;
-        }
-
-        var missing = new List<string>();
-        // Farm / factory names must appear as exact strings (not just the generic party labels).
-        if (!ContainsAny(contractText, farmName))
-            missing.Add("parties/farm");
-        if (!ContainsAny(contractText, factoryName))
-            missing.Add("parties/factory");
-        if (!ContainsAny(contractText, request.CropType, "المحصول"))
-            missing.Add("crop");
-        if (!ContainsAny(contractText, request.QuantityTons.ToString("0"), "الكمية", "طن"))
-            missing.Add("quantity");
-        if (!ContainsAny(contractText, request.PricePerTon.ToString("0"), "السعر", "جنيه"))
-            missing.Add("price");
-        if (!ContainsAny(contractText,
-                request.DeliveryDate.ToString("yyyy"),
-                request.DeliveryDate.ToString("dd"),
-                "التسليم",
-                "التوريد"))
-            missing.Add("delivery date");
-
-        if (missing.Count == 0)
-            return true;
-
-        error = "Missing required fields: " + string.Join(", ", missing);
-        return false;
-    }
-
-    private static bool ContainsAny(string haystack, params string?[] needles)
-    {
-        foreach (var n in needles)
-        {
-            if (string.IsNullOrWhiteSpace(n))
-                continue;
-            if (haystack.Contains(n, StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
-    }
+        out string? error) =>
+        ContractTermsGuard.Validate(contractText, request, farmName, factoryName, out error);
 
     private static string BuildTemplateContract(string farmName, string factoryName, AgentRequest request)
     {

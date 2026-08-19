@@ -1,4 +1,5 @@
 using NileChain.API.Extensions;
+using NileChain.API.Filters;
 using NileChain.Application.Dtos.Auth.Requests;
 using NileChain.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -9,6 +10,7 @@ namespace NileChain.API.Controllers
 {
     [Route("api/auth")]
     [ApiController]
+    [AllowUnverified]
     public class AuthController : ControllerBase
     {
         private readonly IAuthService _authService;

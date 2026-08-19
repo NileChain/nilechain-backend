@@ -114,11 +114,17 @@ public class DisputeRepository : IDisputeRepository
         if (type.HasValue)
             q = q.Where(d => d.Type == type.Value);
 
+        var now = DateTime.UtcNow;
         var total = await q.CountAsync();
         var items = await q
             .AsNoTracking()
             .Include(d => d.Evidence)
-            .OrderByDescending(d => d.CreatedAt)
+            .OrderByDescending(d =>
+                (d.Status == DisputeStatus.Open || d.Status == DisputeStatus.UnderReview)
+                && d.SlaDueAt != null
+                && d.SlaDueAt < now)
+            .ThenBy(d => d.SlaDueAt ?? DateTime.MaxValue)
+            .ThenByDescending(d => d.CreatedAt)
             .Skip(skip)
             .Take(take)
             .ToListAsync();

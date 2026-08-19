@@ -71,6 +71,9 @@ public class Contract
     public ICollection<ContractAttachment> Attachments { get; set; } = new List<ContractAttachment>();
     public ICollection<ContractIntegrityAnchor> IntegrityAnchors { get; set; } = new List<ContractIntegrityAnchor>();
     public ICollection<ContractRevision> Revisions { get; set; } = new List<ContractRevision>();
+    public ICollection<SigningOtp> SigningOtps { get; set; } = new List<SigningOtp>();
+    public ICollection<ContractSignatureRecord> SignatureRecords { get; set; } = new List<ContractSignatureRecord>();
+    public ICollection<ContractAuditLog> AuditLogs { get; set; } = new List<ContractAuditLog>();
 
     /// <summary>Optimistic concurrency token (SQL Server rowversion).</summary>
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();

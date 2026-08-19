@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using NileChain.AI.Sbg;
+using NileChain.AI.Telemetry;
 
 namespace NileChain.AI;
 
@@ -21,6 +22,18 @@ public static class LlmKernelFactory
     public const string ProviderSbg = "sbg";
     public const string ProviderOpenAi = "openai";
     public const string ProviderOpenRouter = "openrouter";
+
+    /// <summary>
+    /// Explicitly runs with no LLM: matching, risk, and contract drafting stay on their
+    /// deterministic paths even when provider keys are present in the environment.
+    /// </summary>
+    public const string ProviderNone = "none";
+
+    /// <summary>Shared so per-request kernels reuse connections instead of leaking sockets.</summary>
+    private static readonly SocketsHttpHandler SharedTransport = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    };
 
     /// <summary>SBG Bearer key only (never an OpenAI sk- key).</summary>
     public static string? ResolveSbgApiKey(IConfiguration configuration) =>
@@ -126,6 +139,7 @@ public static class LlmKernelFactory
             "openai" or "open_ai" or "oai" or "groq" => ProviderOpenAi,
             "openrouter" or "open_router" or "or" => ProviderOpenRouter,
             "sbg" or "bedrock" or "iti" => ProviderSbg,
+            "none" or "off" or "disabled" or "deterministic" => ProviderNone,
             "failover" or "auto" or "fallback" => "failover",
             _ => "failover"
         };
@@ -147,6 +161,8 @@ public static class LlmKernelFactory
 
         switch (preference)
         {
+            case ProviderNone:
+                return chain;
             case ProviderOpenAi:
                 AddIf(ProviderOpenAi, IsOpenAiConfigured(configuration));
                 return chain;
@@ -182,13 +198,15 @@ public static class LlmKernelFactory
         out string? unavailableReason,
         out bool supportsNativeToolCalling,
         out string providerName,
-        SbgStudentChatClient? sbgClient = null)
+        SbgStudentChatClient? sbgClient = null,
+        LlmUsageLedger? usage = null)
     {
         var chain = ResolveProviderChain(configuration);
         if (chain.Count == 0)
         {
-            unavailableReason =
-                "AI service is unavailable. Configure SBG and/or OpenAI/Groq and/or OpenRouter "
+            unavailableReason = ResolveProviderPreference(configuration) == ProviderNone
+                ? "LLM is switched off (Llm:Provider=none); deterministic paths only."
+                : "AI service is unavailable. Configure SBG and/or OpenAI/Groq and/or OpenRouter "
                 + "(OPEN_ROUTER_API_KEY), with Llm:Provider=failover.";
             supportsNativeToolCalling = false;
             providerName = "None";
@@ -201,7 +219,8 @@ public static class LlmKernelFactory
             out unavailableReason,
             out supportsNativeToolCalling,
             out providerName,
-            sbgClient);
+            sbgClient,
+            usage);
     }
 
     public static Kernel? CreateKernelForProvider(
@@ -210,7 +229,8 @@ public static class LlmKernelFactory
         out string? unavailableReason,
         out bool supportsNativeToolCalling,
         out string providerName,
-        SbgStudentChatClient? sbgClient = null)
+        SbgStudentChatClient? sbgClient = null,
+        LlmUsageLedger? usage = null)
     {
         if (string.Equals(providerKey, ProviderOpenAi, StringComparison.OrdinalIgnoreCase))
         {
@@ -222,6 +242,7 @@ public static class LlmKernelFactory
                     configuration["OpenAI:Endpoint"],
                     Environment.GetEnvironmentVariable("OPENAI_ENDPOINT")),
                 missingKeyMessage: "OpenAI/Groq is selected but no key is set (OpenAI:ApiKey / OPENAI_API_KEY).",
+                usage: usage,
                 out unavailableReason,
                 out supportsNativeToolCalling,
                 out providerName);
@@ -236,6 +257,7 @@ public static class LlmKernelFactory
                 endpoint: ResolveOpenRouterEndpoint(configuration),
                 missingKeyMessage:
                     "OpenRouter is selected but no key is set (OPEN_ROUTER_API_KEY / OpenRouter:ApiKey).",
+                usage: usage,
                 out unavailableReason,
                 out supportsNativeToolCalling,
                 out providerName);
@@ -302,6 +324,7 @@ public static class LlmKernelFactory
         string model,
         string? endpoint,
         string missingKeyMessage,
+        LlmUsageLedger? usage,
         out string? unavailableReason,
         out bool supportsNativeToolCalling,
         out string providerName)
@@ -317,23 +340,47 @@ public static class LlmKernelFactory
         }
 
         var builder = Kernel.CreateBuilder();
+        var http = CreateMeteredHttpClient(usage, displayName, model);
+
         if (!string.IsNullOrWhiteSpace(endpoint))
         {
             builder.AddOpenAIChatCompletion(
                 modelId: model,
                 endpoint: new Uri(endpoint.TrimEnd('/')),
-                apiKey: apiKey);
+                apiKey: apiKey,
+                httpClient: http);
         }
         else
         {
             builder.AddOpenAIChatCompletion(
                 modelId: model,
-                apiKey: apiKey);
+                apiKey: apiKey,
+                httpClient: http);
         }
 
         supportsNativeToolCalling = true;
         providerName = displayName;
         return builder.Build();
+    }
+
+    /// <summary>
+    /// Null when there is no ledger, so the SDK keeps its own default client.
+    /// The primary handler is shared so a per-request kernel does not exhaust sockets.
+    /// </summary>
+    private static HttpClient? CreateMeteredHttpClient(
+        LlmUsageLedger? usage,
+        string provider,
+        string model)
+    {
+        if (usage is null)
+            return null;
+
+        return new HttpClient(
+            new LlmUsageHandler(usage, provider, model, SharedTransport),
+            disposeHandler: false)
+        {
+            Timeout = TimeSpan.FromMinutes(2)
+        };
     }
 
     private static Kernel? TryCreateSbgKernel(

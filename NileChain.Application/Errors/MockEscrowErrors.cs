@@ -12,6 +12,21 @@ public static class MockEscrowErrors
             "MockEscrow.UseMockPay",
             "Offline mark-paid is disabled while mock escrow is enabled. Use Pay (Demo) instead.");
 
+    public static readonly Error OfflineMarkPaidConflict =
+        new(
+            "MockEscrow.OfflineMarkPaidConflict",
+            "Offline mark-paid is disabled while the payment gateway is enabled. Pay securely via the gateway session.");
+
+    public static readonly Error WebhookRequiredConflict =
+        new(
+            "MockEscrow.WebhookRequiredConflict",
+            "Browser confirm-paid is ignored. Funds are held only after the payment webhook (or sandbox simulator).");
+
+    public static readonly Error ContractNotSignedConflict =
+        new(
+            "MockEscrow.ContractNotSignedConflict",
+            "Paymob milestone pay requires a fully signed contract.");
+
     public static readonly Error NotFound =
         new("MockEscrow.NotFound", "Escrow transaction was not found.");
 

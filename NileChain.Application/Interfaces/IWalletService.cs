@@ -7,6 +7,9 @@ namespace NileChain.Application.Interfaces;
 public interface IWalletService
 {
     Task<Result<WalletDto>> GetMineAsync(Guid userId, bool asFarm);
+
+    /// <summary>Debit available EGP for one 30-day Pro period (factory or farm).</summary>
+    Task<Result<WalletDto>> PaySubscriptionMonthAsync(Guid userId, bool asFarm);
     Task<Result<WalletTopUpSessionDto>> StartTopUpAsync(
         Guid userId,
         bool asFarm,
@@ -94,6 +97,10 @@ public interface IWalletService
 
     /// <summary>Mark Created/Pending top-ups older than cutoff as Expired. Returns rows updated.</summary>
     Task<int> ExpireStaleTopUpsAsync(DateTime cutoffUtc, CancellationToken cancellationToken = default);
+
+    Task<Result<AdminWithdrawalListDto>> ListWithdrawalsForAdminAsync(string? status, int take = 100);
+    Task<Result<AdminWithdrawalDto>> CompleteWithdrawalAsync(Guid adminUserId, Guid withdrawalId);
+    Task<Result<AdminWithdrawalDto>> RejectWithdrawalAsync(Guid adminUserId, Guid withdrawalId, string? reason);
 }
 
 public interface IPaymobClient
@@ -114,6 +121,8 @@ public sealed class PaymobIntentionRequest
     public string Phone { get; set; } = "+201000000000";
     public string FirstName { get; set; } = "Nile";
     public string LastName { get; set; } = "Chain";
+    public string ItemName { get; set; } = "NileChain wallet top-up";
+    public string ExtraKind { get; set; } = "nilechain_topup";
 }
 
 public sealed class PaymobIntentionResult
@@ -139,5 +148,9 @@ public interface IWalletRepository
     Task AddWithdrawalAsync(Domain.Entities.WalletWithdrawal withdrawal);
     Task<IReadOnlyList<Domain.Entities.WalletLedgerEntry>> GetRecentLedgerAsync(Guid walletId, int take = 30);
     Task<IReadOnlyList<Domain.Entities.WalletWithdrawal>> GetRecentWithdrawalsAsync(Guid walletId, int take = 20);
+    Task<Domain.Entities.WalletWithdrawal?> GetWithdrawalByIdAsync(Guid withdrawalId, bool tracking = true);
+    Task<IReadOnlyList<Domain.Entities.WalletWithdrawal>> ListWithdrawalsAsync(
+        WalletWithdrawalStatus? status,
+        int take = 100);
     Task<IReadOnlyList<Domain.Entities.WalletTopUp>> GetStalePendingTopUpsAsync(DateTime cutoffUtc, CancellationToken cancellationToken = default);
 }

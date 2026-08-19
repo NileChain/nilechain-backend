@@ -1,9 +1,12 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
+using NileChain.AI.Contracts;
 using NileChain.AI.Models;
 using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Sbg;
+using NileChain.AI.Telemetry;
 using NileChain.Application.Common;
 using NileChain.Domain.Common;
 
@@ -16,19 +19,25 @@ public class ContractAgent
     private readonly RagPipeline _ragPipeline;
     private readonly IConfiguration _configuration;
     private readonly SbgStudentChatClient _sbgClient;
+    private readonly LlmUsageLedger _usage;
+    private readonly ILogger<ContractAgent> _logger;
 
     public ContractAgent(
         OpenAiKernelProvider kernelProvider,
         ContractPlugin plugin,
         RagPipeline ragPipeline,
         IConfiguration configuration,
-        SbgStudentChatClient sbgClient)
+        SbgStudentChatClient sbgClient,
+        LlmUsageLedger usage,
+        ILogger<ContractAgent> logger)
     {
         _kernelProvider = kernelProvider;
         _plugin = plugin;
         _ragPipeline = ragPipeline;
         _configuration = configuration;
         _sbgClient = sbgClient;
+        _usage = usage;
+        _logger = logger;
     }
 
     public async Task<ContractGenerationResult> GenerateContractAsync(
@@ -40,34 +49,33 @@ public class ContractAgent
         selectedFarm ??= new MatchResult();
         factoryName ??= string.Empty;
 
+        var facts = ContractFacts.From(request, selectedFarm.FarmName, factoryName);
+
         var chain = LlmKernelFactory.ResolveProviderChain(_configuration);
         if (chain.Count == 0 && !_kernelProvider.IsAvailable)
-        {
-            return ContractGenerationResult.Ok(
-                BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
-        }
+            return ContractGenerationResult.Ok(ContractComposer.Compose(facts));
 
         try
         {
             var ragLookup = await _ragPipeline.GetCombinedContextAsync(request.CropType);
-            var ragContext = ragLookup.IsAvailable
-                ? ragLookup.Content
-                : $"[{ClientErrorSanitizer.ServiceUnavailableMessage}]";
+            // Plain text, not the cited rendering: bracketed markers are rejected by the clause guard.
+            var ragContext = ragLookup.HasKnowledge
+                ? ragLookup.PlainText
+                : "(لا يوجد مرجع في قاعدة المعرفة لهذا المحصول)";
 
-            var prompt = _plugin.BuildContractPrompt(
-                farmName: selectedFarm.FarmName,
-                factoryName: factoryName,
-                cropType: request.CropType,
-                quantityTons: request.QuantityTons,
-                pricePerTon: request.PricePerTon,
-                deliveryDate: request.DeliveryDate.ToString("dd MMMM yyyy"),
+            var prompt = _plugin.BuildStructuredClausePrompt(
+                farmName: facts.FarmName,
+                factoryName: facts.FactoryName,
+                cropType: facts.CropType,
+                quantityTons: facts.QuantityTons,
+                pricePerTon: facts.PricePerTon,
+                deliveryDate: facts.DeliveryDateArabic,
                 qualitySpecs: request.QualitySpecs,
                 ragContext: ragContext,
-                deliveryPointArabic: ContractDraftTemplate.PointArabic(request.DeliveryPoint),
-                freightPayerArabic: ContractDraftTemplate.PartyArabic(request.FreightPayer),
-                transitRiskArabic: ContractDraftTemplate.PartyArabic(request.TransitRisk));
+                deliveryPointArabic: facts.DeliveryPointArabic,
+                freightPayerArabic: facts.FreightPayerArabic,
+                transitRiskArabic: facts.TransitRiskArabic);
 
-            Exception? lastFailure = null;
             foreach (var providerKey in chain.Count > 0
                          ? chain
                          : new[] { LlmKernelFactory.ProviderOpenAi })
@@ -78,39 +86,46 @@ public class ContractAgent
                     out _,
                     out _,
                     out _,
-                    _sbgClient);
+                    _sbgClient,
+                    _usage);
                 if (kernel is null)
                     continue;
 
                 try
                 {
                     var result = await kernel.InvokePromptAsync(prompt);
-                    var text = result.ToString();
-                    if (string.IsNullOrWhiteSpace(text))
+                    if (!ContractClauseDraft.TryParse(result.ToString(), out var clauses, out var reason))
+                    {
+                        _logger.LogInformation(
+                            "Contract clause draft from {Provider} unusable ({Reason}); trying next provider",
+                            providerKey,
+                            reason);
                         continue;
+                    }
 
-                    return ContractGenerationResult.Ok(
-                        ContractSignatureText.StripHandwrittenBlocks(text));
+                    if (reason is not null)
+                    {
+                        _logger.LogInformation(
+                            "Contract clause draft from {Provider} partially accepted: {Reason}",
+                            providerKey,
+                            reason);
+                    }
+
+                    // Numbers, names, and dates come from facts either way — the model only styled the prose.
+                    return ContractGenerationResult.Ok(ContractComposer.Compose(facts, clauses));
                 }
                 catch (Exception ex) when (LlmKernelFactory.IsProviderFailure(ex))
                 {
-                    lastFailure = ex;
+                    _logger.LogWarning(ex, "Contract provider {Provider} failed", providerKey);
                 }
             }
 
-            if (lastFailure is not null)
-            {
-                return ContractGenerationResult.Ok(
-                    BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
-            }
-
-            return ContractGenerationResult.Ok(
-                BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
+            return ContractGenerationResult.Ok(ContractComposer.Compose(facts));
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return ContractGenerationResult.Ok(
-                BuildTemplateContract(selectedFarm.FarmName, factoryName, request));
+            _logger.LogWarning(ex, "Contract generation fell back to the deterministic template");
+            return ContractGenerationResult.Ok(ContractComposer.Compose(facts));
         }
     }
 
@@ -147,7 +162,8 @@ public class ContractAgent
                     out _,
                     out _,
                     out _,
-                    _sbgClient);
+                    _sbgClient,
+                    _usage);
                 if (kernel is null)
                     continue;
 
@@ -190,21 +206,7 @@ public class ContractAgent
             ويبقى ما عدا ذلك من أحكام العقد سارياً دون تغيير.
             """;
     }
-
-    private static string BuildTemplateContract(string farmName, string factoryName, AgentRequest request)
-    {
-        return ContractDraftTemplate.Build(
-            farmName ?? string.Empty,
-            factoryName ?? string.Empty,
-            request.CropType ?? string.Empty,
-            request.QuantityTons,
-            request.PricePerTon,
-            request.DeliveryDate == default
-                ? DateTime.UtcNow.Date.AddDays(30)
-                : request.DeliveryDate,
-            request.QualitySpecs,
-            request.DeliveryPoint,
-            request.FreightPayer,
-            request.TransitRisk);
-    }
 }
+
+
+

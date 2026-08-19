@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using NileChain.AI.Orchestration;
 using NileChain.AI.Weather;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Infrastructure.Persistence;
@@ -270,6 +271,8 @@ public sealed class MonitoringToolsPlugin
                 Title = title,
                 Message = body,
                 Type = normalizedType,
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = contractId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             };

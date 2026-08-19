@@ -14,4 +14,5 @@ public class FactoryProfileResponse
     public decimal AverageRating { get; set; }
     public int RatingCount { get; set; }
     public int CompletionPercent { get; set; }
+    public List<FactoryDocumentDto> Documents { get; set; } = [];
 }

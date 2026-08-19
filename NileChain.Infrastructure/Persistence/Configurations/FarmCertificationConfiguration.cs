@@ -21,6 +21,8 @@ public class FarmCertificationConfiguration : IEntityTypeConfiguration<FarmCerti
             .HasForeignKey(fc => fc.CertificationId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        builder.Property(fc => fc.GrantedByAdminUserId);
+
         builder.ToTable(t => t.HasCheckConstraint(
             "CK_FarmCertification_Dates",
             "[ExpiresAt] IS NULL OR [ExpiresAt] > [IssuedAt]"));

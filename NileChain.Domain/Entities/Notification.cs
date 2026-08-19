@@ -11,6 +11,8 @@ public class Notification
     public string? Type { get; set; }
     public bool IsRead { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string? RelatedEntityType { get; set; }
+    public Guid? RelatedEntityId { get; set; }
 
     public ApplicationUser User { get; set; } = default!;
 }

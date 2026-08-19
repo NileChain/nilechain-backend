@@ -19,6 +19,15 @@ public sealed class MatchEligibilitySnapshot
     public string? FreightPayer { get; set; }
     public string? TransitRisk { get; set; }
 
+    /// <summary>
+    /// Whether the farm sat inside the factory's preferred governorates at propose time.
+    /// Null on rows written before match explanations existed.
+    /// </summary>
+    public bool? LocationMatched { get; set; }
+
+    /// <summary>Match score at propose time, so the explanation reflects the ranking that actually ran.</summary>
+    public decimal? MatchScore { get; set; }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

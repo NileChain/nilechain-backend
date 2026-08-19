@@ -34,4 +34,10 @@ public class AgentResponse
 
     /// <summary>Full tool-call decision trail for this run (write-up evidence).</summary>
     public List<ToolCallTrailEntry> ToolCallTrail { get; set; } = new();
+
+    /// <summary>
+    /// Optional hint that a stronger farm exists one geographic ring out.
+    /// Factory must opt in before those farms enter the shortlist.
+    /// </summary>
+    public PeekHint? PeekHint { get; set; }
 }

@@ -1,0 +1,11 @@
+namespace NileChain.Application.Dtos.Factory;
+
+public class FactoryDocumentDto
+{
+    public Guid DocumentId { get; set; }
+    public string Name { get; set; } = default!;
+    public string FileUrl { get; set; } = default!;
+    public string Size { get; set; } = default!;
+    public string FileType { get; set; } = default!;
+    public string KybKind { get; set; } = "Other";
+}

@@ -4,7 +4,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NileChain.AI.Models;
 using NileChain.AI.Services;
+using NileChain.API.Extensions;
 using NileChain.Application.Common;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -24,6 +26,7 @@ public class AIAgentController : ControllerBase
     private readonly NileChain.Application.Interfaces.IPaymentMilestoneService _paymentMilestoneService;
     private readonly NileChain.Application.Interfaces.IDisputeService _disputeService;
     private readonly NileChain.Application.Interfaces.IContractIntegrityService _integrity;
+    private readonly NileChain.Application.Interfaces.ISubscriptionService _subscriptions;
 
     public AIAgentController(
         AIOrchestrationService aiService,
@@ -32,7 +35,8 @@ public class AIAgentController : ControllerBase
         NileChain.Application.Interfaces.IFulfillmentService fulfillmentService,
         NileChain.Application.Interfaces.IPaymentMilestoneService paymentMilestoneService,
         NileChain.Application.Interfaces.IDisputeService disputeService,
-        NileChain.Application.Interfaces.IContractIntegrityService integrity)
+        NileChain.Application.Interfaces.IContractIntegrityService integrity,
+        NileChain.Application.Interfaces.ISubscriptionService subscriptions)
     {
         _aiService = aiService;
         _db = db;
@@ -41,6 +45,7 @@ public class AIAgentController : ControllerBase
         _paymentMilestoneService = paymentMilestoneService;
         _disputeService = disputeService;
         _integrity = integrity;
+        _subscriptions = subscriptions;
     }
 
     [HttpPost("run/{requestId:guid}")]
@@ -51,6 +56,10 @@ public class AIAgentController : ControllerBase
         var ownership = await EnsureRequestOwnershipAsync(requestId);
         if (ownership is not null)
             return ownership;
+
+        var runGate = await EnsureAgentRunQuotaAsync();
+        if (runGate is not null)
+            return runGate;
 
         request.RequestId = requestId;
         var result = await _aiService.ProcessSupplyRequestAsync(request);
@@ -79,6 +88,7 @@ public class AIAgentController : ControllerBase
             return BadRequest(result);
         }
 
+        await ConsumeAgentRunQuotaAsync();
         return Ok(result);
     }
 
@@ -127,7 +137,15 @@ public class AIAgentController : ControllerBase
                 r.Success,
                 r.ErrorCode,
                 r.TruncatedCount,
-                r.OrchestratorMode
+                r.OrchestratorMode,
+                r.DurationMs,
+                r.LlmProviders,
+                r.LlmModels,
+                r.LlmCalls,
+                r.LlmLatencyMs,
+                r.PromptTokens,
+                r.CompletionTokens,
+                r.EstimatedCostUsd
             })
             .ToListAsync();
 
@@ -156,6 +174,10 @@ public class AIAgentController : ControllerBase
             if (requestOwnership is not null)
                 return requestOwnership;
         }
+
+        var runGate = await EnsureAgentRunQuotaAsync();
+        if (runGate is not null)
+            return runGate;
 
         ContractGenerationResult result;
         try
@@ -278,6 +300,8 @@ public class AIAgentController : ControllerBase
                             Title = "Contract ready for signature",
                             Message = $"A supply contract from {factoryName} is ready for review.",
                             Type = "ContractReady",
+                            RelatedEntityType = NotificationRelations.Contract,
+                            RelatedEntityId = contractId,
                             IsRead = false,
                             CreatedAt = DateTime.UtcNow
                         });
@@ -315,12 +339,40 @@ public class AIAgentController : ControllerBase
             }
         }
 
+        await ConsumeAgentRunQuotaAsync();
         return Ok(new
         {
             contractText = result.ContractText,
             contractId,
             matchId = request.MatchId
         });
+    }
+
+    private async Task<IActionResult?> EnsureAgentRunQuotaAsync()
+    {
+        if (IsElevatedAdmin())
+            return null;
+
+        var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdValue, out var userId))
+            return Unauthorized();
+
+        var quota = await _subscriptions.EnsureCanConsumeAsync(
+            userId,
+            NileChain.Domain.Enums.SubscriptionMetric.AgentRuns);
+        return quota.IsFailure ? quota.ToActionResult() : null;
+    }
+
+    private async Task ConsumeAgentRunQuotaAsync()
+    {
+        if (IsElevatedAdmin())
+            return;
+
+        var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdValue, out var userId))
+            return;
+
+        await _subscriptions.ConsumeAsync(userId, NileChain.Domain.Enums.SubscriptionMetric.AgentRuns);
     }
 
     private async Task<IActionResult?> EnsureRequestOwnershipAsync(Guid requestId)

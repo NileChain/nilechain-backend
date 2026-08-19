@@ -19,8 +19,15 @@ public static class ResultHttpMapper
         if (Contains(code, "NotFound"))
             return HttpStatusCode.NotFound;
 
-        if (Contains(code, "Unauthorized") || Contains(code, "Forbidden"))
+        if (Contains(code, "Unauthorized")
+            || Contains(code, "Forbidden")
+            || Contains(code, "KybPending")
+            || Contains(code, "QuotaExceeded")
+            || Contains(code, "PlanRequired"))
             return HttpStatusCode.Forbidden;
+
+        if (Contains(code, "RateLimited"))
+            return HttpStatusCode.TooManyRequests;
 
         if (Contains(code, "AlreadyExists")
             || Contains(code, "Conflict")

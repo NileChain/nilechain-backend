@@ -11,5 +11,9 @@ namespace NileChain.Application.Dtos.Auth.Responses
         public bool EmailConfirmed { get; set; }
 
         public bool IsVerified { get; set; }
+
+        public string KybReviewStatus { get; set; } = "Pending";
+
+        public string? KybAdminNote { get; set; }
     }
 }

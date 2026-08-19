@@ -34,10 +34,16 @@ public class FarmMatch
     /// <summary>Factory accepted the farm counter terms (contract uses effective counter values).</summary>
     public bool CounterAccepted { get; set; }
 
+    /// <summary>
+    /// True when this farm entered the shortlist only after factory-approved one-ring expansion.
+    /// </summary>
+    public bool IsGeographicExpansion { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public SupplyRequest SupplyRequest { get; set; } = default!;
     public Farm Farm { get; set; } = default!;
     public Contract? Contract { get; set; }
     public ICollection<Message> Messages { get; set; } = new List<Message>();
+    public ICollection<MatchNegotiationRound> NegotiationRounds { get; set; } = new List<MatchNegotiationRound>();
 }

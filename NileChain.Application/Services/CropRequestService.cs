@@ -4,6 +4,7 @@ using NileChain.Application.Dtos.Crop;
 using NileChain.Application.Dtos.Email;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Constants;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -76,6 +77,8 @@ public class CropRequestService : ICropRequestService
                 Title = "New crop request",
                 Message = $"A new crop type \"{name}\" was requested and awaits review.",
                 Type = "CropRequest",
+                RelatedEntityType = NotificationRelations.CropRequest,
+                RelatedEntityId = cropRequest.CropRequestId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             });
@@ -172,6 +175,8 @@ public class CropRequestService : ICropRequestService
             Title = "Crop request approved",
             Message = $"Your crop request \"{finalName}\" was approved and is now available as a crop type.",
             Type = "CropRequest",
+            RelatedEntityType = NotificationRelations.CropRequest,
+            RelatedEntityId = cropRequest.CropRequestId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         });
@@ -211,6 +216,8 @@ public class CropRequestService : ICropRequestService
             Title = "Crop request rejected",
             Message = $"Your crop request \"{cropRequest.Name}\" was rejected.{notesSuffix}",
             Type = "CropRequest",
+            RelatedEntityType = NotificationRelations.CropRequest,
+            RelatedEntityId = cropRequest.CropRequestId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         });

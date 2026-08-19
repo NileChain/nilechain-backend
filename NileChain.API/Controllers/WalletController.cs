@@ -3,6 +3,7 @@ using System.Text.Json;
 using NileChain.API.Extensions;
 using NileChain.Application.Dtos.Wallet;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Services;
 using NileChain.Domain.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -92,15 +93,18 @@ public class WalletController : ControllerBase
 public class PaymobWebhookController : ControllerBase
 {
     private readonly IWalletService _wallets;
+    private readonly IMockEscrowPaymentService _escrow;
     private readonly IPaymobClient _paymob;
     private readonly ILogger<PaymobWebhookController> _logger;
 
     public PaymobWebhookController(
         IWalletService wallets,
+        IMockEscrowPaymentService escrow,
         IPaymobClient paymob,
         ILogger<PaymobWebhookController> logger)
     {
         _wallets = wallets;
+        _escrow = escrow;
         _paymob = paymob;
         _logger = logger;
     }
@@ -141,6 +145,7 @@ public class PaymobWebhookController : ControllerBase
         {
             // Intention extras / order merchant order id
             special = TryReadPath(obj, "order", "merchant_order_id")
+                      ?? TryReadPath(obj, "payment_key_claims", "extra", "nilechain_escrow")
                       ?? TryReadPath(obj, "payment_key_claims", "extra", "nilechain_topup");
         }
 
@@ -148,6 +153,14 @@ public class PaymobWebhookController : ControllerBase
         {
             _logger.LogWarning("Paymob webhook missing special reference");
             return Ok(new { received = true, applied = false });
+        }
+
+        if (MockEscrowPaymentService.TryParseEscrowSpecial(special, out _))
+        {
+            var escrowResult = await _escrow.ApplyPaymobEscrowWebhookAsync(special, txnId, orderId, success);
+            if (escrowResult.IsFailure)
+                _logger.LogWarning("Paymob escrow apply failed: {Code}", escrowResult.Error?.Code);
+            return Ok(new { received = true, applied = escrowResult.IsSuccess });
         }
 
         var result = await _wallets.ApplyPaymobTopUpSuccessAsync(special, txnId, orderId, success);

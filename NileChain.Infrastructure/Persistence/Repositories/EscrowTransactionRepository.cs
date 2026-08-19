@@ -26,6 +26,21 @@ public class EscrowTransactionRepository : IEscrowTransactionRepository
             .OrderByDescending(e => e.CreatedAt)
             .FirstOrDefaultAsync();
 
+    public Task<EscrowTransaction?> GetByPaymobTransactionIdAsync(string paymobTransactionId) =>
+        _db.EscrowTransactions.AsNoTracking()
+            .Where(e => e.PaymobTransactionId == paymobTransactionId)
+            .OrderByDescending(e => e.CreatedAt)
+            .FirstOrDefaultAsync();
+
+    public async Task<IReadOnlyList<EscrowTransaction>> ListForReconciliationAsync() =>
+        await _db.EscrowTransactions.AsNoTracking()
+            .Where(e => e.Status == EscrowStatus.Pending
+                        || e.Status == EscrowStatus.Held
+                        || e.Status == EscrowStatus.Failed)
+            .OrderByDescending(e => e.UpdatedAt)
+            .Take(200)
+            .ToListAsync();
+
     public async Task<IReadOnlyList<EscrowTransaction>> GetByContractIdAsync(Guid contractId) =>
         await _db.EscrowTransactions.AsNoTracking()
             .Where(e => e.ContractId == contractId)

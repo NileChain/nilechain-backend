@@ -259,7 +259,8 @@ public static partial class DevelopmentDataSeeder
                             FarmId = farm.FarmId,
                             CertificationId = cert.CertificationId,
                             IssuedAt = DateTime.UtcNow.AddYears(-2),
-                            ExpiresAt = DateTime.UtcNow.AddMonths(-2 - c)
+                            ExpiresAt = DateTime.UtcNow.AddMonths(-2 - c),
+                            GrantedByAdminUserId = DemoIds.Admin1User
                         });
                     }
                     else
@@ -269,7 +270,8 @@ public static partial class DevelopmentDataSeeder
                             FarmId = farm.FarmId,
                             CertificationId = cert.CertificationId,
                             IssuedAt = DateTime.UtcNow.AddMonths(-6 - c),
-                            ExpiresAt = DateTime.UtcNow.AddMonths(6 + c * 3)
+                            ExpiresAt = DateTime.UtcNow.AddMonths(6 + c * 3),
+                            GrantedByAdminUserId = DemoIds.Admin1User
                         });
                     }
                 }
@@ -309,25 +311,28 @@ public static partial class DevelopmentDataSeeder
 
         foreach (var farm in farms)
         {
-            var docs = new List<(string Name, string Type, int Size)>
+            var docs = new List<(string Name, string Type, int Size, KybKind Kind)>
             {
-                ($"{SeedMarker} land-title-{farm.FarmId:N}.pdf", "application/pdf", 245_760)
+                ($"{SeedMarker} land-title-{farm.FarmId:N}.pdf", "application/pdf", 245_760, KybKind.LandLease)
             };
 
             if (farm.IsVerified)
             {
-                docs.Add(($"{SeedMarker} organic-cert-{farm.FarmId:N}.pdf", "application/pdf", 128_000));
-                docs.Add(($"{SeedMarker} water-permit-{farm.FarmId:N}.pdf", "application/pdf", 96_000));
+                docs.Add(($"{SeedMarker} commercial-register-{farm.FarmId:N}.pdf", "application/pdf", 160_000, KybKind.CommercialRegister));
+                docs.Add(($"{SeedMarker} tax-card-{farm.FarmId:N}.pdf", "application/pdf", 96_000, KybKind.TaxCard));
+                docs.Add(($"{SeedMarker} national-id-{farm.FarmId:N}.pdf", "application/pdf", 80_000, KybKind.NationalId));
+                docs.Add(($"{SeedMarker} organic-cert-{farm.FarmId:N}.pdf", "application/pdf", 128_000, KybKind.Other));
+                docs.Add(($"{SeedMarker} water-permit-{farm.FarmId:N}.pdf", "application/pdf", 96_000, KybKind.Other));
             }
 
             if (farm.FarmCertifications.Count > 0)
-                docs.Add(($"{SeedMarker} cert-pack-{farm.FarmId:N}.pdf", "application/pdf", 180_000));
+                docs.Add(($"{SeedMarker} cert-pack-{farm.FarmId:N}.pdf", "application/pdf", 180_000, KybKind.Other));
 
             // Some farms get extra docs for pagination stress
             if (rng.Next(100) < 30)
-                docs.Add(($"{SeedMarker} soil-report-{farm.FarmId:N}.pdf", "application/pdf", 210_000));
+                docs.Add(($"{SeedMarker} soil-report-{farm.FarmId:N}.pdf", "application/pdf", 210_000, KybKind.Other));
 
-            foreach (var (fileName, fileType, size) in docs)
+            foreach (var (fileName, fileType, size, kind) in docs)
             {
                 if (existingSet.Contains((farm.FarmId, fileName)))
                     continue;
@@ -341,7 +346,8 @@ public static partial class DevelopmentDataSeeder
                     FileSize = size,
                     FileType = fileType,
                     PublicId = $"seed/{farm.FarmId}/{Path.GetFileNameWithoutExtension(fileName)}",
-                    UploadedAt = DateTime.UtcNow.AddDays(-rng.Next(5, 90))
+                    UploadedAt = DateTime.UtcNow.AddDays(-rng.Next(5, 90)),
+                    KybKind = kind
                 });
                 added = true;
             }

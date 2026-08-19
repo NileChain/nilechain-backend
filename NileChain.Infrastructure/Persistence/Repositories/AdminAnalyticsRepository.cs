@@ -18,7 +18,11 @@ public sealed class AdminAnalyticsRepository : IAdminAnalyticsRepository
     }
 
     public Task<int> CountUnverifiedUsersAsync(CancellationToken cancellationToken = default) =>
-        _userManager.Users.CountAsync(u => !u.IsVerified && u.IsActive, cancellationToken);
+        _userManager.Users.CountAsync(
+            u => !u.IsVerified
+                && u.IsActive
+                && u.KybReviewStatus != NileChain.Domain.Enums.KybReviewStatus.Rejected,
+            cancellationToken);
 
     public Task<int> CountAllUsersAsync(CancellationToken cancellationToken = default) =>
         _userManager.Users.CountAsync(cancellationToken);
@@ -230,5 +234,60 @@ public sealed class AdminAnalyticsRepository : IAdminAnalyticsRepository
         }).ToList();
 
         return (total, items);
+    }
+
+    public Task<int> CountPendingWithdrawalsAsync(CancellationToken cancellationToken = default) =>
+        _db.WalletWithdrawals.AsNoTracking().CountAsync(
+            w => w.Status == WalletWithdrawalStatus.Pending
+                 || w.Status == WalletWithdrawalStatus.Processing,
+            cancellationToken);
+
+    public async Task<IReadOnlyDictionary<Guid, LatestKybReportRow>> GetLatestKybReportsAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (userIds.Count == 0)
+            return new Dictionary<Guid, LatestKybReportRow>();
+
+        var idSet = userIds.ToHashSet();
+        var rows = await _db.KybVerificationReports
+            .AsNoTracking()
+            .Where(r => idSet.Contains(r.UserId))
+            .OrderByDescending(r => r.CreatedAt)
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .GroupBy(r => r.UserId)
+            .Select(g => g.First())
+            .ToDictionary(
+                r => r.UserId,
+                r => new LatestKybReportRow(
+                    r.UserId,
+                    r.TrustScore,
+                    r.Recommendation,
+                    r.OverallSummary,
+                    r.BreakdownJson,
+                    r.CreatedAt));
+    }
+
+    public async Task<LatestKybReportRow?> GetLatestKybReportAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        var row = await _db.KybVerificationReports
+            .AsNoTracking()
+            .Where(r => r.UserId == userId)
+            .OrderByDescending(r => r.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return row is null
+            ? null
+            : new LatestKybReportRow(
+                row.UserId,
+                row.TrustScore,
+                row.Recommendation,
+                row.OverallSummary,
+                row.BreakdownJson,
+                row.CreatedAt);
     }
 }

@@ -15,4 +15,7 @@ public class MatchSearchResult
 
     /// <summary>Configured shortlist size used for this search.</summary>
     public int TakeLimit { get; set; }
+
+    /// <summary>Better farm one ring outside the committed scope, if any. Not in <see cref="Results"/>.</summary>
+    public PeekHint? PeekHint { get; set; }
 }

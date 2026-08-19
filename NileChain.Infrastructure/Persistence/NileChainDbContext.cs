@@ -11,6 +11,7 @@ public class NileChainDbContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<FarmDocument> FarmDocuments => Set<FarmDocument>();
     public DbSet<FarmImage> FarmImages => Set<FarmImage>();
     public DbSet<Factory> Factory => Set<Factory>();
+    public DbSet<FactoryDocument> FactoryDocuments => Set<FactoryDocument>();
     public DbSet<CropType> CropTypes => Set<CropType>();
     public DbSet<FarmCrop> FarmCrops => Set<FarmCrop>();
     public DbSet<CropRequest> CropRequests => Set<CropRequest>();
@@ -18,6 +19,7 @@ public class NileChainDbContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<FarmCertification> FarmCertifications => Set<FarmCertification>();
     public DbSet<SupplyRequest> SupplyRequests => Set<SupplyRequest>();
     public DbSet<FarmMatch> FarmMatches => Set<FarmMatch>();
+    public DbSet<MatchNegotiationRound> MatchNegotiationRounds => Set<MatchNegotiationRound>();
     public DbSet<Contract> Contracts => Set<Contract>();
     public DbSet<ContractRevision> ContractRevisions => Set<ContractRevision>();
     public DbSet<ContractAttachment> ContractAttachments => Set<ContractAttachment>();
@@ -43,6 +45,14 @@ public class NileChainDbContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<MarketPrice> MarketPrices => Set<MarketPrice>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<AgentRun> AgentRuns => Set<AgentRun>();
+    public DbSet<SigningOtp> SigningOtps => Set<SigningOtp>();
+    public DbSet<ContractSignatureRecord> ContractSignatureRecords => Set<ContractSignatureRecord>();
+    public DbSet<ContractAuditLog> ContractAuditLogs => Set<ContractAuditLog>();
+    public DbSet<ChannelMessage> ChannelMessages => Set<ChannelMessage>();
+    public DbSet<KybVerificationReport> KybVerificationReports => Set<KybVerificationReport>();
+    public DbSet<KybDecision> KybDecisions => Set<KybDecision>();
+    public DbSet<Subscription> Subscriptions => Set<Subscription>();
+    public DbSet<SubscriptionUsage> SubscriptionUsages => Set<SubscriptionUsage>();
 
     public NileChainDbContext(DbContextOptions<NileChainDbContext> options) : base(options) { }
 

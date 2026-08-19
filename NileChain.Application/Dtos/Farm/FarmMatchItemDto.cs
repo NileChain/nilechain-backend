@@ -20,6 +20,7 @@ public class FarmMatchItemDto
     public Guid? ContractId { get; set; }
     public bool ContractFullySigned { get; set; }
     public bool CanMessage { get; set; }
+    public List<NileChain.Application.Dtos.Factory.MatchNegotiationRoundDto> NegotiationRounds { get; set; } = new();
 
     public decimal? CounterQuantityTons { get; set; }
     public decimal? CounterPricePerTon { get; set; }

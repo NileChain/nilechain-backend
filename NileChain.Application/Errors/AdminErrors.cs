@@ -27,5 +27,20 @@ namespace NileChain.Application.Errors
 
         public static readonly Error UserNotDeactivated =
             new("Admin.UserNotDeactivated", "User is not deactivated.");
+
+        public static readonly Error CannotDeleteSelf =
+            new("Admin.CannotDeleteSelf", "Admin cannot delete their own account.");
+
+        public static readonly Error KybReasonRequired =
+            new("Admin.KybReasonRequired", "A written reason is required for this KYB decision.");
+
+        public static readonly Error KybRejectFailed =
+            new("Admin.KybRejectFailed", "Could not save the KYB rejection.");
+
+        public static readonly Error KybReportNotFound =
+            new("Admin.KybReportNotFound", "No KYB analysis report was found for this user.");
+
+        public static readonly Error KybUnsupportedRole =
+            new("Admin.KybUnsupportedRole", "KYB review is only available for farm and factory accounts.");
     }
 }

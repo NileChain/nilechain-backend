@@ -54,20 +54,40 @@ public sealed class CopilotChatService
         var context = await BuildDealContextAsync(userId, roles, request, cancellationToken);
         var cropForRag = context.CropType ?? "agricultural supply";
         var rag = await _rag.GetCombinedContextAsync(cropForRag);
-        var ragText = rag.IsAvailable && !string.IsNullOrWhiteSpace(rag.Content)
-            ? rag.Content
-            : "(knowledge base unavailable)";
 
-        var system = """
+        // With no deal in scope and no retrieved passage there is nothing to ground an answer on,
+        // so say that instead of spending a call and letting the model answer from memory.
+        if (!context.HasDeal && !rag.HasKnowledge)
+        {
+            return new CopilotChatResponse
+            {
+                Success = true,
+                Reply = NoGroundingReply,
+                UsedRag = false,
+                KnowledgeUnavailable = true
+            };
+        }
+
+        var ragText = rag.HasKnowledge
+            ? rag.CitedText
+            : "(no knowledge-base passage matched this question)";
+
+        var system = $"""
             You are NileChain Copilot for Egyptian B2B farm↔factory deals.
-            Answer only from the DEAL CONTEXT and RAG excerpts below. Do not invent farms, prices, or contracts.
+            Answer only from the DEAL CONTEXT and the numbered SOURCES below.
+            Do not invent farms, prices, contracts, or standards.
+            Cite every claim taken from a SOURCE with its number in square brackets, e.g. [1].
+            Never cite a number that is not listed in SOURCES, and never cite the DEAL CONTEXT.
+            {(rag.HasKnowledge
+                ? string.Empty
+                : "SOURCES is empty: state that the knowledge base has nothing on this and answer only from DEAL CONTEXT.")}
             If context is missing, say so and suggest the user open a match or contract.
             Reply in the same language as the user (Arabic or English). Be concise.
             """;
 
         var userPrompt =
             $"ROLE: {string.Join(',', roles)}\nPROMPT_ID: {request.PromptId ?? "free-text"}\n\n" +
-            $"DEAL CONTEXT:\n{context.Text}\n\nRAG EXCERPTS:\n{ragText}\n\nUSER:\n{message}";
+            $"DEAL CONTEXT:\n{context.Text}\n\nSOURCES:\n{ragText}\n\nUSER:\n{message}";
 
         try
         {
@@ -101,12 +121,27 @@ public sealed class CopilotChatService
                 };
             }
 
+            // Markers pointing at sources that were never retrieved are stripped, so the UI
+            // can only ever show a citation that maps to a real passage.
+            var (answer, used) = rag.ResolveCitations(reply);
+
             return new CopilotChatResponse
             {
                 Success = true,
-                Reply = reply.Trim(),
-                UsedRag = rag.IsAvailable && !string.IsNullOrWhiteSpace(rag.Content),
-                Provider = provider
+                Reply = answer,
+                UsedRag = used.Count > 0,
+                KnowledgeUnavailable = !rag.HasKnowledge,
+                Provider = provider,
+                Citations = used
+                    .Select(c => new CopilotCitation
+                    {
+                        Index = c.Index,
+                        Id = c.Id,
+                        Section = c.Section,
+                        Title = c.Title,
+                        Excerpt = c.Excerpt
+                    })
+                    .ToList()
             };
         }
         catch (Exception)
@@ -120,7 +155,11 @@ public sealed class CopilotChatService
         }
     }
 
-    private async Task<(string Text, string? CropType)> BuildDealContextAsync(
+    internal const string NoGroundingReply =
+        "لا توجد صفقة محدَّدة ولا مصدر في قاعدة المعرفة يخصّ هذا السؤال، "
+        + "لذلك لا أستطيع الإجابة بمصدر موثوق. افتح مطابقة أو عقداً، أو اسأل عن بيانات صفقة قائمة.";
+
+    private async Task<(string Text, string? CropType, bool HasDeal)> BuildDealContextAsync(
         Guid userId,
         IReadOnlyCollection<string> roles,
         CopilotChatRequest request,
@@ -190,10 +229,11 @@ public sealed class CopilotChatService
             }
         }
 
-        if (lines.Count == 0)
+        var hasDeal = lines.Count > 0;
+        if (!hasDeal)
             lines.Add("No in-scope deal is selected. Ask a general NileChain question or open a match/contract.");
 
-        return (string.Join('\n', lines), crop);
+        return (string.Join('\n', lines), crop, hasDeal);
     }
 
     private static CopilotChatResponse Fail(string message) =>

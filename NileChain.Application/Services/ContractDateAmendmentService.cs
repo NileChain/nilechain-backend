@@ -2,6 +2,7 @@ using NileChain.Application.Common;
 using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Interfaces;
@@ -86,6 +87,8 @@ public class ContractDateAmendmentService : IContractDateAmendmentService
                 Title = "Contract date amendment proposed",
                 Message = reason,
                 Type = "ContractDateAmendment",
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = contract.ContractId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             });
@@ -142,6 +145,8 @@ public class ContractDateAmendmentService : IContractDateAmendmentService
                 Title = "Contract date amendment accepted",
                 Message = "The other party accepted the proposed contract date change.",
                 Type = "ContractDateAmendment",
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = contract.ContractId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             });
@@ -182,6 +187,8 @@ public class ContractDateAmendmentService : IContractDateAmendmentService
                 Title = "Contract date amendment rejected",
                 Message = "The other party rejected the proposed contract date change.",
                 Type = "ContractDateAmendment",
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = contract.ContractId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             });

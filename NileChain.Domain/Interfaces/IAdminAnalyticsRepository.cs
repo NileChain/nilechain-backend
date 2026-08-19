@@ -27,7 +27,29 @@ public interface IAdminAnalyticsRepository
         int skip,
         int take,
         CancellationToken cancellationToken = default);
+
+    Task<int> CountPendingWithdrawalsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(0);
+
+    Task<IReadOnlyDictionary<Guid, LatestKybReportRow>> GetLatestKybReportsAsync(
+        IReadOnlyCollection<Guid> userIds,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyDictionary<Guid, LatestKybReportRow>>(
+            new Dictionary<Guid, LatestKybReportRow>());
+
+    Task<LatestKybReportRow?> GetLatestKybReportAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<LatestKybReportRow?>(null);
 }
+
+public sealed record LatestKybReportRow(
+    Guid UserId,
+    int TrustScore,
+    string Recommendation,
+    string OverallSummary,
+    string BreakdownJson,
+    DateTime CreatedAt);
 
 public sealed record AdminContractRow(
     Guid ContractId,

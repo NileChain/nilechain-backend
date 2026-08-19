@@ -15,5 +15,13 @@ public class ApplicationUserConfiguration : IEntityTypeConfiguration<Application
             .IsUnique()
             .HasFilter("[PhoneNumber] IS NOT NULL AND [PhoneNumber] != ''")
             .HasDatabaseName("IX_AspNetUsers_PhoneNumber");
+
+        builder.Property(u => u.KybReviewStatus)
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .HasDefaultValue(NileChain.Domain.Enums.KybReviewStatus.Pending)
+            .IsRequired();
+
+        builder.Property(u => u.KybAdminNote).HasMaxLength(2000);
     }
 }

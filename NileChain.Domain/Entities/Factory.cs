@@ -18,5 +18,6 @@ public class Factory
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ApplicationUser User { get; set; } = default!;
+    public ICollection<FactoryDocument> FactoryDocuments { get; set; } = new List<FactoryDocument>();
     public ICollection<SupplyRequest> SupplyRequests { get; set; } = new List<SupplyRequest>();
 }

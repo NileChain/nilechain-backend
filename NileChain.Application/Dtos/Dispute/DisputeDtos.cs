@@ -32,6 +32,8 @@ public sealed class DisputeDto
     public string? AdminNote { get; set; }
     public string OutcomeFavor { get; set; } = default!;
     public DateTime CreatedAt { get; set; }
+    public DateTime? SlaDueAt { get; set; }
+    public bool IsOverdue { get; set; }
     public DateTime? UnderReviewAt { get; set; }
     public DateTime? ResolvedAt { get; set; }
     public DateTime? RejectedAt { get; set; }

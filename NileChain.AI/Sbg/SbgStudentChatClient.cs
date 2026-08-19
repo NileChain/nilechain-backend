@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NileChain.AI.Telemetry;
 
 namespace NileChain.AI.Sbg;
 
@@ -19,18 +21,23 @@ public sealed class SbgStudentChatClient
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    public const string ProviderName = "sbg";
+
     private readonly HttpClient _http;
     private readonly SbgOptions _options;
     private readonly ILogger<SbgStudentChatClient> _logger;
+    private readonly LlmUsageLedger? _usage;
 
     public SbgStudentChatClient(
         HttpClient http,
         IOptions<SbgOptions> options,
-        ILogger<SbgStudentChatClient> logger)
+        ILogger<SbgStudentChatClient> logger,
+        LlmUsageLedger? usage = null)
     {
         _http = http;
         _options = options.Value;
         _logger = logger;
+        _usage = usage;
     }
 
     public bool IsConfigured =>
@@ -89,8 +96,12 @@ public sealed class SbgStudentChatClient
             ModelId,
             messages.Count);
 
+        var sw = Stopwatch.StartNew();
         using var response = await _http.SendAsync(request, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        sw.Stop();
+
+        RecordUsage(body, sw.ElapsedMilliseconds);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -111,6 +122,15 @@ public sealed class SbgStudentChatClient
         }
 
         return text.Trim();
+    }
+
+    private void RecordUsage(string body, long elapsedMs)
+    {
+        if (_usage is null)
+            return;
+
+        var (promptTokens, completionTokens) = LlmUsageJson.TryRead(body);
+        _usage.Record(ProviderName, ModelId, promptTokens, completionTokens, elapsedMs);
     }
 
     private Uri BuildUri(string path)

@@ -7,6 +7,7 @@ namespace NileChain.Tests.TestDoubles;
 internal sealed class NoopEscrowPayments : IMockEscrowPaymentService
 {
     public bool IsMockGatewayEnabled => false;
+    public bool IsGatewayEnabled => false;
     public decimal PlatformFeePercent => 0m;
 
     public Task<Result<MockEscrowSessionDto>> CreateSessionAsync(
@@ -18,6 +19,16 @@ internal sealed class NoopEscrowPayments : IMockEscrowPaymentService
         Guid factoryUserId, Guid contractId, Guid escrowTransactionId) =>
         Task.FromResult(Result<PaymentMilestoneScheduleDto>.Failure(
             NileChain.Application.Errors.MockEscrowErrors.GatewayDisabled));
+
+    public Task<Result<PaymentMilestoneScheduleDto>> CompleteSimulatorAsync(
+        Guid factoryUserId, Guid contractId, Guid escrowTransactionId) =>
+        Task.FromResult(Result<PaymentMilestoneScheduleDto>.Failure(
+            NileChain.Application.Errors.MockEscrowErrors.GatewayDisabled));
+
+    public Task<Result<PaymentMilestoneScheduleDto>> ApplyPaymobEscrowWebhookAsync(
+        string specialReference, string? paymobTransactionId, string? orderId, bool success) =>
+        Task.FromResult(Result<PaymentMilestoneScheduleDto>.Failure(
+            NileChain.Application.Errors.MockEscrowErrors.NotFound));
 
     public Task<Result<PaymentMilestoneScheduleDto>> ConfirmReleaseAsync(
         Guid factoryUserId, Guid contractId, Guid escrowTransactionId) =>
@@ -51,4 +62,7 @@ internal sealed class NoopEscrowPayments : IMockEscrowPaymentService
     public Task<Result> SettleDisputeOutcomeAsync(
         Guid contractId, Guid actorUserId, string outcomeFavor, string reason) =>
         Task.FromResult(Result.Success());
+
+    public Task<Result<EscrowReconciliationDto>> ListReconciliationAsync() =>
+        Task.FromResult(Result<EscrowReconciliationDto>.Success(new EscrowReconciliationDto()));
 }

@@ -27,6 +27,7 @@ public static partial class DevelopmentDataSeeder
     private const string DemoFactoryAverageEmail = "demo.factory.average@nilechain.dev";
     private const string DemoFactoryEmptyEmail = "demo.factory.empty@nilechain.dev";
     private const string DemoFactoryInactiveEmail = "demo.factory.inactive@nilechain.dev";
+    private const string DemoFactoryFreeEmail = "demo.factory.free@nilechain.dev";
 
     private const string DemoFarmTopEmail = "demo.farm.top@nilechain.dev";
     private const string DemoFarmAverageEmail = "demo.farm.average@nilechain.dev";
@@ -34,6 +35,7 @@ public static partial class DevelopmentDataSeeder
     private const string DemoFarmRiskyEmail = "demo.farm.risky@nilechain.dev";
     private const string DemoFarmUnverifiedEmail = "demo.farm.unverified@nilechain.dev";
     private const string DemoFarmInactiveEmail = "demo.farm.inactive@nilechain.dev";
+    private const string DemoFarmFreeEmail = "demo.farm.free@nilechain.dev";
 
     // -------------------------------------------------------------------------
     // Deterministic IDs (never change)
@@ -50,6 +52,7 @@ public static partial class DevelopmentDataSeeder
         public static readonly Guid FactoryAverageUser = Guid.Parse("d0a00002-0001-4000-8000-000000000002");
         public static readonly Guid FactoryEmptyUser = Guid.Parse("d0a00002-0001-4000-8000-000000000003");
         public static readonly Guid FactoryInactiveUser = Guid.Parse("d0a00002-0001-4000-8000-000000000004");
+        public static readonly Guid FactoryFreeUser = Guid.Parse("d0a00002-0001-4000-8000-000000000005");
 
         public static readonly Guid FarmTopUser = Guid.Parse("d0a00003-0001-4000-8000-000000000001");
         public static readonly Guid FarmAverageUser = Guid.Parse("d0a00003-0001-4000-8000-000000000002");
@@ -57,12 +60,14 @@ public static partial class DevelopmentDataSeeder
         public static readonly Guid FarmRiskyUser = Guid.Parse("d0a00003-0001-4000-8000-000000000004");
         public static readonly Guid FarmUnverifiedUser = Guid.Parse("d0a00003-0001-4000-8000-000000000005");
         public static readonly Guid FarmInactiveUser = Guid.Parse("d0a00003-0001-4000-8000-000000000006");
+        public static readonly Guid FarmFreeUser = Guid.Parse("d0a00003-0001-4000-8000-000000000007");
 
         // Profiles
         public static readonly Guid FactoryRich = Guid.Parse("d0b00002-0001-4000-8000-000000000001");
         public static readonly Guid FactoryAverage = Guid.Parse("d0b00002-0001-4000-8000-000000000002");
         public static readonly Guid FactoryEmpty = Guid.Parse("d0b00002-0001-4000-8000-000000000003");
         public static readonly Guid FactoryInactive = Guid.Parse("d0b00002-0001-4000-8000-000000000004");
+        public static readonly Guid FactoryFree = Guid.Parse("d0b00002-0001-4000-8000-000000000005");
 
         public static readonly Guid FarmTop = Guid.Parse("d0b00003-0001-4000-8000-000000000001");
         public static readonly Guid FarmAverage = Guid.Parse("d0b00003-0001-4000-8000-000000000002");
@@ -70,6 +75,7 @@ public static partial class DevelopmentDataSeeder
         public static readonly Guid FarmRisky = Guid.Parse("d0b00003-0001-4000-8000-000000000004");
         public static readonly Guid FarmUnverified = Guid.Parse("d0b00003-0001-4000-8000-000000000005");
         public static readonly Guid FarmInactive = Guid.Parse("d0b00003-0001-4000-8000-000000000006");
+        public static readonly Guid FarmFree = Guid.Parse("d0b00003-0001-4000-8000-000000000007");
 
         // Workflow A — Best AI Match (5 matches)
         public static readonly Guid ReqBestAi = Guid.Parse("d0c0000a-0001-4000-8000-000000000001");
@@ -160,6 +166,12 @@ public static partial class DevelopmentDataSeeder
             verified: true, active: true, daysAgo: 30);
 
         await EnsureDemoFactoryAsync(db, userManager,
+            DemoFactoryFreeEmail, DemoIds.FactoryFreeUser, DemoIds.FactoryFree,
+            "Free Quota Mill (Demo)", "10th of Ramadan", "Sharqia",
+            "Demo free-tier factory — hits RFQ and agent-run paywalls",
+            verified: true, active: true, daysAgo: 7);
+
+        await EnsureDemoFactoryAsync(db, userManager,
             DemoFactoryInactiveEmail, DemoIds.FactoryInactiveUser, DemoIds.FactoryInactive,
             "Inactive Nile Mills (Demo)", "Sadat City", "Monufia",
             "Flour Milling | Capacity ~180 tons/month | Preferred: Wheat",
@@ -223,6 +235,16 @@ public static partial class DevelopmentDataSeeder
             profileComplete: true, daysAgo: 220,
             crops: ["Wheat"],
             certs: ["HACCP"],
+            expiredCerts: false,
+            docs: true);
+
+        await EnsureDemoFarmAsync(db, userManager, cropTypes, certifications,
+            DemoFarmFreeEmail, DemoIds.FarmFreeUser, DemoIds.FarmFree,
+            "Free Quota Farm (Demo)", "Zagazig", "Sharqia",
+            size: 16m, soil: SoilType.Loamy, risk: 62m, verified: true, active: true,
+            profileComplete: true, daysAgo: 7,
+            crops: ["Tomato"],
+            certs: [],
             expiredCerts: false,
             docs: true);
 
@@ -489,7 +511,8 @@ public static partial class DevelopmentDataSeeder
                     : DateTime.UtcNow.AddMonths(-8),
                 ExpiresAt = expiredCerts
                     ? DateTime.UtcNow.AddMonths(-3)
-                    : DateTime.UtcNow.AddMonths(10 + i)
+                    : DateTime.UtcNow.AddMonths(10 + i),
+                GrantedByAdminUserId = DemoIds.Admin1User
             });
         }
 
@@ -506,8 +529,49 @@ public static partial class DevelopmentDataSeeder
                 FileSize = 200_000,
                 FileType = "application/pdf",
                 PublicId = $"demo/{farmId:N}/land-title",
-                UploadedAt = DateTime.UtcNow.AddDays(-Math.Max(1, daysAgo / 2))
+                UploadedAt = DateTime.UtcNow.AddDays(-Math.Max(1, daysAgo / 2)),
+                KybKind = KybKind.LandLease
             });
+
+            if (verified)
+            {
+                db.FarmDocuments.Add(new FarmDocument
+                {
+                    FarmDocumentId = CreateDeterministicGuid($"demo-doc-{farmId:N}-cr"),
+                    FarmId = farmId,
+                    FileName = $"{DemoMarker} commercial-register-{email.Split('@')[0]}.pdf",
+                    FileUrl = $"https://res.cloudinary.com/demo/raw/upload/demo/{farmId:N}/commercial-register.pdf",
+                    FileSize = 120_000,
+                    FileType = "application/pdf",
+                    PublicId = $"demo/{farmId:N}/commercial-register",
+                    UploadedAt = DateTime.UtcNow.AddDays(-Math.Max(2, daysAgo / 3)),
+                    KybKind = KybKind.CommercialRegister
+                });
+                db.FarmDocuments.Add(new FarmDocument
+                {
+                    FarmDocumentId = CreateDeterministicGuid($"demo-doc-{farmId:N}-tax"),
+                    FarmId = farmId,
+                    FileName = $"{DemoMarker} tax-card-{email.Split('@')[0]}.pdf",
+                    FileUrl = $"https://res.cloudinary.com/demo/raw/upload/demo/{farmId:N}/tax-card.pdf",
+                    FileSize = 90_000,
+                    FileType = "application/pdf",
+                    PublicId = $"demo/{farmId:N}/tax-card",
+                    UploadedAt = DateTime.UtcNow.AddDays(-Math.Max(2, daysAgo / 3)),
+                    KybKind = KybKind.TaxCard
+                });
+                db.FarmDocuments.Add(new FarmDocument
+                {
+                    FarmDocumentId = CreateDeterministicGuid($"demo-doc-{farmId:N}-nid"),
+                    FarmId = farmId,
+                    FileName = $"{DemoMarker} national-id-{email.Split('@')[0]}.pdf",
+                    FileUrl = $"https://res.cloudinary.com/demo/raw/upload/demo/{farmId:N}/national-id.pdf",
+                    FileSize = 80_000,
+                    FileType = "application/pdf",
+                    PublicId = $"demo/{farmId:N}/national-id",
+                    UploadedAt = DateTime.UtcNow.AddDays(-Math.Max(2, daysAgo / 3)),
+                    KybKind = KybKind.NationalId
+                });
+            }
         }
 
         return farm;
@@ -794,12 +858,14 @@ public static partial class DevelopmentDataSeeder
             AverageFactoryEmail = DemoFactoryAverageEmail,
             EmptyFactoryEmail = DemoFactoryEmptyEmail,
             InactiveFactoryEmail = DemoFactoryInactiveEmail,
+            FreeFactoryEmail = DemoFactoryFreeEmail,
             TopFarmEmail = DemoFarmTopEmail,
             AverageFarmEmail = DemoFarmAverageEmail,
             NewFarmEmail = DemoFarmNewEmail,
             RiskyFarmEmail = DemoFarmRiskyEmail,
             UnverifiedFarmEmail = DemoFarmUnverifiedEmail,
             InactiveFarmEmail = DemoFarmInactiveEmail,
+            FreeFarmEmail = DemoFarmFreeEmail,
             BestAiMatchRequestId = await FindRequestId("WF-A-BEST-AI"),
             NoMatchesRequestId = await FindRequestId("WF-B-NO-MATCH"),
             MostConversationsRequestId = await FindRequestId("RICH-MOST-CONV"),
@@ -821,12 +887,14 @@ public sealed class DemoSeedReport
     public string AverageFactoryEmail { get; init; } = "";
     public string EmptyFactoryEmail { get; init; } = "";
     public string InactiveFactoryEmail { get; init; } = "";
+    public string FreeFactoryEmail { get; init; } = "";
     public string TopFarmEmail { get; init; } = "";
     public string AverageFarmEmail { get; init; } = "";
     public string NewFarmEmail { get; init; } = "";
     public string RiskyFarmEmail { get; init; } = "";
     public string UnverifiedFarmEmail { get; init; } = "";
     public string InactiveFarmEmail { get; init; } = "";
+    public string FreeFarmEmail { get; init; } = "";
     public Guid? BestAiMatchRequestId { get; init; }
     public Guid? NoMatchesRequestId { get; init; }
     public Guid? MostConversationsRequestId { get; init; }
@@ -866,6 +934,9 @@ public sealed class DemoSeedReport
             "Inactive Factory",
             InactiveFactoryEmail,
             "",
+            "Free Factory (paywall)",
+            FreeFactoryEmail,
+            "",
             "Top Farm",
             TopFarmEmail,
             "",
@@ -883,6 +954,9 @@ public sealed class DemoSeedReport
             "",
             "Inactive Farm",
             InactiveFarmEmail,
+            "",
+            "Free Farm (paywall)",
+            FreeFarmEmail,
             "",
             "==============================",
             "BEST DEMO REQUESTS",

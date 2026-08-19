@@ -163,14 +163,15 @@ namespace NileChain.Application.Services
             var confirmationLink =
     $"{_appOptions.FrontendBaseUrl}/confirm-email?userId={user.Id}&token={encodedToken}";
 
-            var html = await _templateRenderer.RenderAsync(
+            try
+            {
+                var html = await _templateRenderer.RenderAsync(
                     EmailTemplates.ConfirmEmail,
                     new Dictionary<string, string>
                     {
                         ["ConfirmationLink"] = confirmationLink
                     });
-            try
-            {
+
                 await _emailService.SendAsync(new EmailMessage
                 {
                     To = user.Email!,
@@ -181,7 +182,7 @@ namespace NileChain.Application.Services
             }
             catch
             {
-                Console.WriteLine("Gmail is Down");
+                Console.WriteLine("Confirm email failed");
             }
 
             // Get Roles
@@ -216,14 +217,7 @@ namespace NileChain.Application.Services
                 RefreshToken = refreshToken.Token,
                 ExpiresAt = accessToken.ExpiresAt,
 
-                User = new UserResponse
-                {
-                    Id = user.Id,
-                    Email = user.Email!,
-                    Role = roles.First(),
-                    EmailConfirmed = user.EmailConfirmed,
-                    IsVerified = user.IsVerified
-                }
+                User = MapUserResponse(user, roles.First())
             };
 
             return Result<AuthResponse>.Success(response);
@@ -292,18 +286,7 @@ namespace NileChain.Application.Services
 
                     ExpiresAt = accessToken.ExpiresAt,
 
-                    User = new UserResponse
-                    {
-                        Id = user.Id,
-
-                        Email = user.Email!,
-
-                        Role = roles.Single(),
-
-                        EmailConfirmed = user.EmailConfirmed,
-
-                        IsVerified = user.IsVerified
-                    }
+                    User = MapUserResponse(user, roles.Single())
                 });
         }
 
@@ -378,18 +361,7 @@ namespace NileChain.Application.Services
 
                     ExpiresAt = accessToken.ExpiresAt,
 
-                    User = new UserResponse
-                    {
-                        Id = user.Id,
-
-                        Email = user.Email!,
-
-                        Role = roles.Single(),
-
-                        EmailConfirmed = user.EmailConfirmed,
-
-                        IsVerified = user.IsVerified
-                    }
+                    User = MapUserResponse(user, roles.Single())
                 });
         }
 
@@ -414,7 +386,9 @@ namespace NileChain.Application.Services
                     Email = user.Email!,
                     Role = roles.Single(),
                     EmailConfirmed = user.EmailConfirmed,
-                    IsVerified = user.IsVerified
+                    IsVerified = user.IsVerified,
+                    KybReviewStatus = user.KybReviewStatus.ToString(),
+                    KybAdminNote = user.KybAdminNote
                 });
         }
 
@@ -578,6 +552,18 @@ namespace NileChain.Application.Services
 
             return Result.Success();
         }
+
+        private static UserResponse MapUserResponse(ApplicationUser user, string role) =>
+            new()
+            {
+                Id = user.Id,
+                Email = user.Email!,
+                Role = role,
+                EmailConfirmed = user.EmailConfirmed,
+                IsVerified = user.IsVerified,
+                KybReviewStatus = user.KybReviewStatus.ToString(),
+                KybAdminNote = user.KybAdminNote
+            };
 
     }
 }

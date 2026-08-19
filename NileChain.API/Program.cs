@@ -53,8 +53,10 @@ builder.Services.AddHostedService<NileChain.API.HostedServices.FarmMarketplaceRe
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<NileChain.API.Filters.FluentValidationActionFilter>();
+    options.Filters.Add<NileChain.API.Filters.RequireKybVerifiedFilter>();
 });
 builder.Services.AddScoped<NileChain.API.Filters.FluentValidationActionFilter>();
+builder.Services.AddScoped<NileChain.API.Filters.RequireKybVerifiedFilter>();
 builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
 builder.Services.AddScoped<NileChain.API.Health.IDatabasePing, NileChain.API.Health.EfDatabasePing>();
@@ -222,6 +224,15 @@ static void ValidateProductionConfiguration(WebApplicationBuilder builder)
     {
         throw new InvalidOperationException(
             "Jwt:Secret must be set to a strong non-development secret in Production (e.g. Jwt__Secret).");
+    }
+
+    var signingSecret = builder.Configuration["Signing:HmacSecret"];
+    if (string.IsNullOrWhiteSpace(signingSecret)
+        || string.Equals(signingSecret, "__SET_IN_LOCAL_CONFIG__", StringComparison.Ordinal)
+        || signingSecret.Length < 32)
+    {
+        throw new InvalidOperationException(
+            "Signing:HmacSecret must be set to a strong non-development secret in Production.");
     }
 }
 

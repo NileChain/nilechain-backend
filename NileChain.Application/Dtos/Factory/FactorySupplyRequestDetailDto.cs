@@ -18,6 +18,11 @@ public class FactorySupplyRequestDetailDto
     public bool CanCancel { get; set; }
     public bool CanRerunAgent { get; set; }
     public bool CanUpdateDeliveryTerms { get; set; }
+    public bool FactoryApprovedOneRingExpansion { get; set; }
+    public int? ShortlistTakeLimit { get; set; }
+    public bool CanExpandGeo { get; set; }
+    public bool CanShowMoreMatches { get; set; }
+    public bool CanUpdateGeoScope { get; set; }
     public string DeliveryPoint { get; set; } = "FactoryGate";
     public string FreightPayer { get; set; } = "Farm";
     public string TransitRisk { get; set; } = "Farm";

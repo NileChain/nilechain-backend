@@ -12,11 +12,6 @@ namespace NileChain.AI.Plugins;
 
 public class MatchingPlugin
 {
-    private const decimal CropMatchPoints = 40m;
-    private const decimal LocationMatchPoints = 20m;
-    private const decimal VerifiedFarmPoints = 20m;
-    private const decimal RiskScoreMaxPoints = 20m;
-
     private readonly NileChainDbContext _context;
     private readonly ILogger<MatchingPlugin> _logger;
     private readonly int _maxResults;
@@ -78,7 +73,24 @@ public class MatchingPlugin
             supplyRequest.QualitySpecs,
             preferredGovernorates.Count > 0);
 
-        var scope = GeographicMatching.ResolveEffectiveScope(persistedScope, geographicOverride);
+        var takeLimit = MatchingLimits.ResolveMaxResults(
+            supplyRequest.ShortlistTakeLimit ?? _maxResults);
+
+        var factoryApprovedExpansion = supplyRequest.FactoryApprovedOneRingExpansion;
+        var tightenedScope = GeographicMatching.ResolveEffectiveScope(persistedScope, geographicOverride);
+
+        var searchScope = tightenedScope;
+        var searchRadiusKm = _nearbyRadiusKm;
+        if (factoryApprovedExpansion
+            && GeographicPeek.TryPeekParameters(
+                persistedScope,
+                _nearbyRadiusKm,
+                out var peekScope,
+                out var peekRadiusKm))
+        {
+            searchScope = GeographicMatching.ResolveEffectiveScope(peekScope, geographicOverride);
+            searchRadiusKm = peekRadiusKm;
+        }
 
         var neededTons = supplyRequest.QuantityTons;
         var deliveryDate = supplyRequest.DeliveryDate?.Date;
@@ -130,40 +142,122 @@ public class MatchingPlugin
         var factoryLat = supplyRequest.Factory?.Latitude;
         var factoryLon = supplyRequest.Factory?.Longitude;
 
-        var geoFiltered = ApplyGeographicFilter(
+        var primaryFiltered = ApplyGeographicFilter(
             candidates,
             preferredGovernorates,
-            scope,
+            tightenedScope,
             factoryLat,
-            factoryLon);
+            factoryLon,
+            _nearbyRadiusKm);
+
+        var searchFiltered = searchScope == tightenedScope && Math.Abs(searchRadiusKm - _nearbyRadiusKm) < 0.01
+            ? primaryFiltered
+            : ApplyGeographicFilter(
+                candidates,
+                preferredGovernorates,
+                searchScope,
+                factoryLat,
+                factoryLon,
+                searchRadiusKm);
+
+        var primaryIds = primaryFiltered.Select(p => p.Candidate.FarmId).ToHashSet();
 
         _logger.LogInformation(
             "Geographic matching RequestId={RequestId} SelectedGovernorates={Preferred} " +
             "PersistedGeoScope={Persisted} RequestedOverride={Override} EffectiveGeoScope={Effective} " +
-            "NearbyRadiusKm={NearbyRadiusKm} " +
+            "SearchGeoScope={Search} NearbyRadiusKm={NearbyRadiusKm} SearchRadiusKm={SearchRadius} " +
+            "FactoryApprovedOneRing={Approved} " +
             "CandidateCountBeforeGeoFilter={Before} CandidateCountAfterGeoFilter={After} " +
-            "ExpansionAttempted={ExpansionAttempted} ExpansionAllowed={ExpansionAllowed}",
+            "PrimaryCount={Primary} ExpansionAttempted={ExpansionAttempted} ExpansionAllowed={ExpansionAllowed}",
             requestId,
             string.Join(",", preferredGovernorates),
             persistedScope,
             geographicOverride?.ToString() ?? "none",
-            scope,
+            tightenedScope,
+            searchScope,
             _nearbyRadiusKm,
+            searchRadiusKm,
+            factoryApprovedExpansion,
             beforeGeo,
-            geoFiltered.Count,
+            searchFiltered.Count,
+            primaryFiltered.Count,
             geographicOverride is not null && (int)geographicOverride.Value > (int)persistedScope,
-            GeographicMatching.AllowsAutomaticGeographicExpansion(persistedScope)
+            factoryApprovedExpansion
+                || GeographicMatching.AllowsAutomaticGeographicExpansion(persistedScope)
                 || (geographicOverride is not null
                     && (int)geographicOverride.Value <= (int)persistedScope));
 
-        var ranked = geoFiltered
+        var ranked = RankFiltered(
+            searchFiltered,
+            preferredGovernorates,
+            cropTypeName,
+            primaryIds,
+            factoryApprovedExpansion);
+
+        PeekHint? peekHint = null;
+        if (!factoryApprovedExpansion
+            && GeographicPeek.TryPeekParameters(
+                persistedScope,
+                _nearbyRadiusKm,
+                out var hintScope,
+                out var hintRadius))
+        {
+            var shadowFiltered = hintScope == tightenedScope && Math.Abs(hintRadius - _nearbyRadiusKm) < 0.01
+                ? primaryFiltered
+                : ApplyGeographicFilter(
+                    candidates,
+                    preferredGovernorates,
+                    hintScope,
+                    factoryLat,
+                    factoryLon,
+                    hintRadius);
+
+            var primaryRanked = RankFiltered(
+                primaryFiltered,
+                preferredGovernorates,
+                cropTypeName,
+                primaryIds,
+                factoryApprovedExpansion: false);
+            var shadowRanked = RankFiltered(
+                shadowFiltered,
+                preferredGovernorates,
+                cropTypeName,
+                primaryIds: null,
+                factoryApprovedExpansion: false);
+            peekHint = GeographicPeek.Pick(primaryRanked, shadowRanked);
+        }
+
+        var totalEligible = ranked.Count;
+        var results = ranked.Take(takeLimit).ToList();
+        var truncatedCount = Math.Max(0, totalEligible - results.Count);
+
+        return new MatchSearchResult
+        {
+            Results = results,
+            TotalEligible = totalEligible,
+            TruncatedCount = truncatedCount,
+            TakeLimit = takeLimit,
+            PeekHint = peekHint
+        };
+    }
+
+    private static List<MatchResult> RankFiltered(
+        IReadOnlyList<GeoFilteredCandidate> filtered,
+        IReadOnlyList<string> preferredGovernorates,
+        string cropTypeName,
+        HashSet<Guid>? primaryIds,
+        bool factoryApprovedExpansion)
+    {
+        return filtered
             .Select(item =>
             {
                 var farm = item.Candidate;
                 var riskScore = farm.RiskScore ?? 0m;
-                var matchScore = CalculateMatchScore(
+                var locationMatched = GeographicMatching.IsPreferredMatch(
                     farm.Governorate,
-                    preferredGovernorates,
+                    preferredGovernorates);
+                var matchScore = NileChain.Domain.Matching.MatchScoreWeights.Compute(
+                    locationMatched,
                     farm.IsVerified,
                     riskScore);
 
@@ -176,8 +270,12 @@ public class MatchingPlugin
                     RiskScore = riskScore,
                     RiskLevel = GetRiskLevel(riskScore),
                     IsVerified = farm.IsVerified,
+                    LocationMatched = locationMatched,
                     DistanceKm = item.DistanceKm,
                     UsedGovernorateFallback = item.UsedGovernorateFallback,
+                    IsGeographicExpansion = factoryApprovedExpansion
+                        && primaryIds is not null
+                        && !primaryIds.Contains(farm.FarmId),
                     CropTypes = farm.CropTypeNames.Count > 0
                         ? farm.CropTypeNames
                         : new List<string> { cropTypeName }
@@ -189,18 +287,6 @@ public class MatchingPlugin
             .ThenByDescending(r => r.IsVerified)
             .ThenBy(r => r.FarmId)
             .ToList();
-
-        var totalEligible = ranked.Count;
-        var results = ranked.Take(_maxResults).ToList();
-        var truncatedCount = Math.Max(0, totalEligible - results.Count);
-
-        return new MatchSearchResult
-        {
-            Results = results,
-            TotalEligible = totalEligible,
-            TruncatedCount = truncatedCount,
-            TakeLimit = _maxResults
-        };
     }
 
     /// <summary>
@@ -227,7 +313,8 @@ public class MatchingPlugin
         IReadOnlyList<string> preferredGovernorates,
         GeographicMatching.Scope scope,
         decimal? factoryLat,
-        decimal? factoryLon)
+        decimal? factoryLon,
+        double nearbyRadiusKm)
     {
         if (scope == GeographicMatching.Scope.Exact
             || scope == GeographicMatching.Scope.Nationwide)
@@ -258,7 +345,7 @@ public class MatchingPlugin
                     farm.Latitude!.Value,
                     farm.Longitude!.Value);
 
-                if (distance <= _nearbyRadiusKm)
+                if (distance <= nearbyRadiusKm)
                 {
                     accepted.Add(new GeoFilteredCandidate(
                         farm,
@@ -299,35 +386,9 @@ public class MatchingPlugin
             farmLon.Value);
     }
 
-    private static decimal CalculateMatchScore(
-        string? farmGovernorate,
-        IReadOnlyList<string> preferredGovernorates,
-        bool isVerified,
-        decimal riskScore)
-    {
-        // Crop match is guaranteed by the candidate query.
-        decimal score = CropMatchPoints;
-
-        if (GeographicMatching.IsPreferredMatch(farmGovernorate, preferredGovernorates))
-        {
-            score += LocationMatchPoints;
-        }
-
-        if (isVerified)
-            score += VerifiedFarmPoints;
-
-        // Proportional: RiskScore 75 → 15 points (out of 20). Assumes RiskScore is on a 0–100 scale.
-        score += (riskScore / 100m) * RiskScoreMaxPoints;
-
-        return score;
-    }
-
-    private static string GetRiskLevel(decimal score) => score switch
-    {
-        >= 70 => "منخفض المخاطر",
-        >= 40 => "متوسط المخاطر",
-        _ => "عالي المخاطر"
-    };
+    private static string GetRiskLevel(decimal score) =>
+        NileChain.Domain.Common.FarmTrustLevelText.Arabic(
+            NileChain.Domain.Common.FarmTrustScore.ToBand(score));
 
     private sealed record FarmCandidate(
         Guid FarmId,

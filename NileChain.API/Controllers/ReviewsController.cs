@@ -33,14 +33,26 @@ public class ReviewsController : ControllerBase
     [HttpGet("contract/{contractId:guid}")]
     public async Task<IActionResult> GetForContract(Guid contractId)
     {
-        var result = await _reviewService.GetReviewsForContractAsync(contractId);
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var isAdmin = User.IsInRole("Admin") || User.IsInRole("SuperAdmin");
+        var result = await _reviewService.GetReviewsForContractAsync(
+            contractId, Guid.Parse(userId), isAdmin);
         return result.ToActionResult();
     }
 
     [HttpGet("target/{targetId:guid}")]
     public async Task<IActionResult> GetForTarget(Guid targetId)
     {
-        var result = await _reviewService.GetReviewsForTargetAsync(targetId);
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var isAdmin = User.IsInRole("Admin") || User.IsInRole("SuperAdmin");
+        var result = await _reviewService.GetReviewsForTargetAsync(
+            targetId, Guid.Parse(userId), isAdmin);
         return result.ToActionResult();
     }
 }

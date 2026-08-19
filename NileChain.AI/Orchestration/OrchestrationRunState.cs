@@ -43,6 +43,8 @@ public sealed class OrchestrationRunState
     /// </summary>
     public bool FactoryApprovedNationwideExpansion { get; set; }
 
+    public PeekHint? PeekHint { get; set; }
+
     public bool RiskWarningActive { get; set; }
     public Guid? WarnedFarmId { get; set; }
     public int? WarnedRiskScore { get; set; }

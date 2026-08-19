@@ -4,6 +4,10 @@ namespace NileChain.AI.RAG;
 
 public class RagPipeline
 {
+    public const string SectionQuality = "معايير الجودة";
+    public const string SectionContract = "قوالب العقود";
+    public const string SectionAgriScience = "علوم زراعية";
+
     private readonly ChromaService _chromaService;
 
     public RagPipeline(ChromaService chromaService)
@@ -33,13 +37,15 @@ public class RagPipeline
     }
 
     /// <summary>
-    /// Combined RAG context. When Chroma is down, <see cref="ChromaLookupResult.IsAvailable"/> is false
-    /// and Content is the client-safe "AI service unavailable" message.
+    /// Combined retrieval across the three knowledge sections, numbered for citation.
+    /// When Chroma is down the result is <see cref="RagContext.Unavailable"/>; when it answers
+    /// with nothing the result is <see cref="RagContext.Empty"/> — callers must treat those
+    /// differently from a real hit, since neither one grounds an answer.
     /// </summary>
-    public async Task<ChromaLookupResult> GetCombinedContextAsync(string query)
+    public async Task<RagContext> GetCombinedContextAsync(string query)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return ChromaLookupResult.Empty();
+            return RagContext.Empty();
 
         try
         {
@@ -49,47 +55,32 @@ public class RagPipeline
 
             await Task.WhenAll(qualityTask, contractTask, agriScienceTask);
 
-            var qualityResults = await qualityTask;
-            var contractResults = await contractTask;
-            var agriScienceResults = await agriScienceTask;
+            var quality = await qualityTask;
+            var contract = await contractTask;
+            var agriScience = await agriScienceTask;
 
-            if (!qualityResults.IsAvailable
-                || !contractResults.IsAvailable
-                || !agriScienceResults.IsAvailable)
-            {
-                return ChromaLookupResult.Unavailable();
-            }
+            if (!quality.IsAvailable || !contract.IsAvailable || !agriScience.IsAvailable)
+                return RagContext.Unavailable(ClientErrorSanitizer.ServiceUnavailableMessage);
 
-            var sections = new List<string>();
+            var passages = new List<(string Section, RagChunk Chunk)>();
+            Collect(passages, SectionQuality, quality);
+            Collect(passages, SectionContract, contract);
+            Collect(passages, SectionAgriScience, agriScience);
 
-            if (!string.IsNullOrWhiteSpace(qualityResults.Content))
-                sections.Add(FormatSection("QUALITY STANDARDS", qualityResults.Content));
-
-            if (!string.IsNullOrWhiteSpace(contractResults.Content))
-                sections.Add(FormatSection("CONTRACT TEMPLATE", contractResults.Content));
-
-            if (!string.IsNullOrWhiteSpace(agriScienceResults.Content))
-                sections.Add(FormatSection("AGRI SCIENCE", agriScienceResults.Content));
-
-            if (sections.Count == 0)
-                return ChromaLookupResult.Empty();
-
-            return ChromaLookupResult.Ok(
-                string.Join(Environment.NewLine + Environment.NewLine, sections));
+            return RagContext.FromSections(passages);
         }
         catch
         {
-            return ChromaLookupResult.Unavailable();
+            return RagContext.Unavailable(ClientErrorSanitizer.ServiceUnavailableMessage);
         }
     }
 
-    private static string FormatSection(string title, string body) =>
-        "=================================="
-        + Environment.NewLine
-        + title
-        + Environment.NewLine
-        + "=================================="
-        + Environment.NewLine
-        + Environment.NewLine
-        + body.Trim();
+    private static void Collect(
+        List<(string Section, RagChunk Chunk)> passages,
+        string section,
+        ChromaLookupResult lookup)
+    {
+        foreach (var chunk in lookup.Chunks)
+            passages.Add((section, chunk));
+    }
 }

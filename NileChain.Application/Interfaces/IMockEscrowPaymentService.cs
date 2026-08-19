@@ -6,6 +6,7 @@ namespace NileChain.Application.Interfaces;
 public interface IMockEscrowPaymentService
 {
     bool IsMockGatewayEnabled { get; }
+    bool IsGatewayEnabled { get; }
     decimal PlatformFeePercent { get; }
 
     Task<Result<MockEscrowSessionDto>> CreateSessionAsync(
@@ -18,6 +19,17 @@ public interface IMockEscrowPaymentService
         Guid factoryUserId,
         Guid contractId,
         Guid escrowTransactionId);
+
+    Task<Result<PaymentMilestoneScheduleDto>> CompleteSimulatorAsync(
+        Guid factoryUserId,
+        Guid contractId,
+        Guid escrowTransactionId);
+
+    Task<Result<PaymentMilestoneScheduleDto>> ApplyPaymobEscrowWebhookAsync(
+        string specialReference,
+        string? paymobTransactionId,
+        string? orderId,
+        bool success);
 
     Task<Result<PaymentMilestoneScheduleDto>> ConfirmReleaseAsync(
         Guid factoryUserId,
@@ -71,4 +83,6 @@ public interface IMockEscrowPaymentService
         Guid actorUserId,
         string outcomeFavor,
         string reason);
+
+    Task<Result<EscrowReconciliationDto>> ListReconciliationAsync();
 }

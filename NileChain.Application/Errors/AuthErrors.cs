@@ -88,5 +88,10 @@ namespace NileChain.Application.Errors
             new(
                 "Auth.AccountInactive",
                 "Your account has been deactivated. Please contact support.");
+
+        public static readonly Error KybPending =
+            new(
+                "Auth.KybPending",
+                "Your account is waiting for KYB approval. You can update your profile and documents until then.");
     }
 }

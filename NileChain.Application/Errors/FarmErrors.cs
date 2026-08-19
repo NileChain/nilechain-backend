@@ -16,7 +16,11 @@ public static class FarmErrors
         "Provide at least one counter term (quantity, price, or delivery date). Values must be valid.");
     public static readonly Error MatchNotCounterable = new(
         "Farm.MatchNotCounterable",
-        "Only proposed matches can receive a counter-offer.");
+        "Only proposed or countered matches can receive a counter-offer.");
+
+    public static readonly Error MatchNotCountered = new(
+        "Farm.MatchNotCountered",
+        "This match has no pending factory counter-offer.");
     public static readonly Error ImageNotFound = new("Farm.ImageNotFound", "Farm image not found.");
     public static readonly Error ImageInvalid = new("Farm.ImageInvalid", "Only JPG, PNG, or WEBP images are allowed.");
     public static readonly Error CertificationNotFound = new("Farm.CertificationNotFound", "Certification not found.");
@@ -26,9 +30,15 @@ public static class FarmErrors
     public static readonly Error CertificationNotOnFarm = new(
         "Farm.CertificationNotOnFarm",
         "This certification is not linked to the farm.");
+    public static readonly Error CertificationForbidden = new(
+        "Farm.CertificationForbidden",
+        "Certifications are granted by NileChain admin after document review.");
     public static readonly Error InvalidCertificationDates = new(
         "Farm.InvalidCertificationDates",
         "ExpiresAt must be after IssuedAt when provided.");
+    public static readonly Error KybKindRequired = new(
+        "Farm.KybKindRequired",
+        "Choose a document type (commercial register, tax card, national ID, land lease, or other).");
     public static readonly Error DocumentNotFound = new("Farm.DocumentNotFound", "Document not found.");
     public static readonly Error UnauthorizedAccess = new("Farm.UnauthorizedAccess", "You do not have access to this farm resource.");
     public static readonly Error MatchNotFound = new("Farm.MatchNotFound", "Match not found.");
@@ -57,7 +67,11 @@ public static class FarmErrors
     public static readonly Error ConversationNotFound = new("Farm.ConversationNotFound", "Conversation not found.");
     public static readonly Error CannotSendMessage = new(
         "Farm.CannotSendMessage",
-        "Messaging is available only after both parties have signed the contract.");
+        "Messaging is available once a match is proposed (until it is excluded or rejected).");
+
+    public static readonly Error NegotiationRoundLimit = new(
+        "Farm.NegotiationRoundLimit",
+        "This match has reached the maximum number of negotiation rounds.");
     public static readonly Error FactoryProfileUnavailable = new(
         "Farm.FactoryProfileUnavailable",
         "Factory profile is available only after a match with that factory.");

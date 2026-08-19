@@ -265,6 +265,11 @@ public class MockEscrowPaymentServiceTests
             Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>.Failure(
                 NileChain.Application.Errors.WalletErrors.NotFound));
 
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>> PaySubscriptionMonthAsync(
+            Guid userId, bool asFarm) =>
+            Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletDto>.Failure(
+                NileChain.Application.Errors.WalletErrors.NotFound));
+
         public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletTopUpSessionDto>> StartTopUpAsync(
             Guid userId, bool asFarm, decimal amountEgp, string? idempotencyKey, string? returnUrl) =>
             Task.FromResult(NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.WalletTopUpSessionDto>.Failure(
@@ -336,6 +341,24 @@ public class MockEscrowPaymentServiceTests
         public Task<int> ExpireStaleTopUpsAsync(
             DateTime cutoffUtc, CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.AdminWithdrawalListDto>>
+            ListWithdrawalsForAdminAsync(string? status, int take = 100) =>
+            Task.FromResult(
+                NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.AdminWithdrawalListDto>
+                    .Success(new NileChain.Application.Dtos.Wallet.AdminWithdrawalListDto()));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.AdminWithdrawalDto>>
+            CompleteWithdrawalAsync(Guid adminUserId, Guid withdrawalId) =>
+            Task.FromResult(
+                NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.AdminWithdrawalDto>
+                    .Failure(NileChain.Application.Errors.WalletErrors.WithdrawalNotFound));
+
+        public Task<NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.AdminWithdrawalDto>>
+            RejectWithdrawalAsync(Guid adminUserId, Guid withdrawalId, string? reason) =>
+            Task.FromResult(
+                NileChain.Application.Common.Result<NileChain.Application.Dtos.Wallet.AdminWithdrawalDto>
+                    .Failure(NileChain.Application.Errors.WalletErrors.WithdrawalNotFound));
     }
 
     private sealed class NoopCloudinary : NileChain.Application.Interfaces.ICloudinaryService

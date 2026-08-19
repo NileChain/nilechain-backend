@@ -1,6 +1,7 @@
 using NileChain.API.Extensions;
 using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Dtos.Farm;
+using NileChain.Application.Dtos.Signing;
 using NileChain.Application.Interfaces;
 using NileChain.Application.Validation;
 using Microsoft.AspNetCore.Authorization;
@@ -23,6 +24,7 @@ public class FarmController : ControllerBase
     private readonly IContractAttachmentService _attachmentService;
     private readonly IContractDateAmendmentService _dateAmendmentService;
     private readonly IContractChangeRequestService _changeRequestService;
+    private readonly ISigningOtpService _signingOtp;
 
     public FarmController(
         IFarmService farmService,
@@ -32,7 +34,8 @@ public class FarmController : ControllerBase
         IDisputeService disputeService,
         IContractAttachmentService attachmentService,
         IContractDateAmendmentService dateAmendmentService,
-        IContractChangeRequestService changeRequestService)
+        IContractChangeRequestService changeRequestService,
+        ISigningOtpService signingOtp)
     {
         _farmService = farmService;
         _fulfillmentService = fulfillmentService;
@@ -42,6 +45,7 @@ public class FarmController : ControllerBase
         _attachmentService = attachmentService;
         _dateAmendmentService = dateAmendmentService;
         _changeRequestService = changeRequestService;
+        _signingOtp = signingOtp;
     }
 
     [HttpGet("profile")]
@@ -89,13 +93,18 @@ public class FarmController : ControllerBase
     }
 
     [HttpPost("documents")]
-    public async Task<IActionResult> AddDocument(IFormFile file)
+    public async Task<IActionResult> AddDocument(
+        IFormFile file,
+        [FromForm] string? kybKind)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
-        var result = await _farmService.AddDocumentAsync(Guid.Parse(userId), file);
+        var result = await _farmService.AddDocumentAsync(
+            Guid.Parse(userId),
+            file,
+            kybKind);
         return result.ToActionResult();
     }
 
@@ -162,6 +171,17 @@ public class FarmController : ControllerBase
             return Unauthorized();
 
         var result = await _farmService.CounterOfferAsync(Guid.Parse(userId), matchId, request);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
+    }
+
+    [HttpPost("matches/{matchId:guid}/accept-counter")]
+    public async Task<IActionResult> AcceptCounterOffer(Guid matchId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.AcceptCounterOfferAsync(Guid.Parse(userId), matchId);
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
@@ -385,14 +405,36 @@ public class FarmController : ControllerBase
         return result.ToActionResult();
     }
 
-    [HttpPut("contracts/{contractId:guid}/approve")]
-    public async Task<IActionResult> ApproveContract(Guid contractId)
+    [HttpPost("contracts/{contractId:guid}/signing-otp")]
+    public async Task<IActionResult> RequestSigningOtp(Guid contractId)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
-        var result = await _farmService.ApproveContractAsync(Guid.Parse(userId), contractId);
+        var result = await _signingOtp.SendOtpAsync(
+            contractId,
+            Guid.Parse(userId),
+            HttpContext.ClientIp());
+        return result.ToActionResult();
+    }
+
+    [HttpPut("contracts/{contractId:guid}/approve")]
+    public async Task<IActionResult> ApproveContract(
+        Guid contractId,
+        [FromBody] ApproveContractRequest? request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _farmService.ApproveContractAsync(
+            Guid.Parse(userId),
+            contractId,
+            request?.OtpCode,
+            HttpContext.ClientIp(),
+            HttpContext.ClientUserAgent(),
+            request?.ConsentText);
         return result.ToActionResult();
     }
 

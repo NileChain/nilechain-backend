@@ -38,7 +38,9 @@ public class AdminDashboardContractsTests
             null!,
             null!,
             null!,
+            null!,
             analytics,
+            null!,
             null!);
     }
 

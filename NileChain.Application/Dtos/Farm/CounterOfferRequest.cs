@@ -6,4 +6,5 @@ public class CounterOfferRequest
     public decimal? PricePerTon { get; set; }
     public DateTime? DeliveryDate { get; set; }
     public string? Note { get; set; }
+    public string? Grade { get; set; }
 }

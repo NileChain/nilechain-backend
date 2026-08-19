@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Infrastructure.Persistence;
@@ -119,7 +120,22 @@ public sealed class FarmMarketplaceReminderHostedService : BackgroundService
                 Message =
                     $"Milestone '{tx.Label}' is past due ({tx.DueDate:yyyy-MM-dd}). Ref {refKey}. Status tracking only — follow up with the factory offline.",
                 Type = "PaymentOverdue",
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = tx.ContractId,
                 IsRead = false,
+                CreatedAt = utcNow
+            }, ct);
+            await db.ChannelMessages.AddAsync(new ChannelMessage
+            {
+                ChannelMessageId = Guid.NewGuid(),
+                Channel = "WhatsApp",
+                ToPhone = "unknown",
+                UserId = farmUserId.Value,
+                TemplateKey = "PaymentDue",
+                Body = $"Payment overdue for '{tx.Label}' on contract {tx.ContractId:N}.",
+                Status = ChannelMessageStatus.Logged,
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = tx.ContractId,
                 CreatedAt = utcNow
             }, ct);
             created++;
@@ -173,6 +189,8 @@ public sealed class FarmMarketplaceReminderHostedService : BackgroundService
                 Message =
                     $"{name} expires on {cert.ExpiresAt:yyyy-MM-dd}. Renew it to keep match trust high. Ref {refKey}.",
                 Type = "CertExpiring",
+                RelatedEntityType = NotificationRelations.Profile,
+                RelatedEntityId = cert.FarmId,
                 IsRead = false,
                 CreatedAt = utcNow
             }, ct);

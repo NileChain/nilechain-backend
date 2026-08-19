@@ -9,9 +9,12 @@ using NileChain.Application.Validation;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
+using NileChain.Domain.Identity;
 using NileChain.Domain.Interfaces;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace NileChain.Application.Services;
 
@@ -33,6 +36,13 @@ public class FarmService : IFarmService
     private readonly IMockEscrowPaymentService _escrowPayments;
     private readonly IContractIntegrityService _integrity;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ISigningOtpService _signingOtp;
+    private readonly IContractHashService _contractHash;
+    private readonly IContractSignatureRepository _signatures;
+    private readonly IEmailService _email;
+    private readonly ILogger<FarmService> _logger;
+    private readonly UserManager<ApplicationUser>? _userManager;
+    private readonly ISubscriptionService? _subscriptions;
 
     public FarmService(
         IFarmRepository farmRepository,
@@ -50,7 +60,14 @@ public class FarmService : IFarmService
         IWalletService walletService,
         IMockEscrowPaymentService escrowPayments,
         IContractIntegrityService integrity,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        ISigningOtpService? signingOtp = null,
+        IContractHashService? contractHash = null,
+        IContractSignatureRepository? signatures = null,
+        IEmailService? email = null,
+        ILogger<FarmService>? logger = null,
+        UserManager<ApplicationUser>? userManager = null,
+        ISubscriptionService? subscriptions = null)
     {
         _farmRepository = farmRepository;
         _cropTypeRepository = cropTypeRepository;
@@ -68,6 +85,13 @@ public class FarmService : IFarmService
         _escrowPayments = escrowPayments;
         _integrity = integrity;
         _unitOfWork = unitOfWork;
+        _signingOtp = signingOtp!;
+        _contractHash = contractHash!;
+        _signatures = signatures!;
+        _email = email!;
+        _logger = logger!;
+        _userManager = userManager;
+        _subscriptions = subscriptions;
     }
 
     public async Task<Result<FarmDashboardResponse>> GetDashboardAsync(Guid userId)
@@ -385,7 +409,10 @@ public class FarmService : IFarmService
         return Result.Success();
     }
 
-    public async Task<Result<FarmDocumentDto>> AddDocumentAsync(Guid userId, IFormFile file)
+    public async Task<Result<FarmDocumentDto>> AddDocumentAsync(
+        Guid userId,
+        IFormFile file,
+        string? kybKind)
     {
         var farm = await _farmRepository.GetByUserIdAsync(userId);
         if (farm is null)
@@ -410,6 +437,15 @@ public class FarmService : IFarmService
 
         var (url, publicId) = await _cloudinaryService.UploadAsync(file);
 
+        // kybKind comes from the frontend dropdown (enum value as string).
+        // If parsing fails or is missing, default to Other.
+        var parsedKybKind = Enum.TryParse<KybKind>(
+            kybKind,
+            ignoreCase: true,
+            out var k)
+            ? k
+            : KybKind.Other;
+
         var document = new FarmDocument
         {
             FarmDocumentId = Guid.NewGuid(),
@@ -418,10 +454,12 @@ public class FarmService : IFarmService
             FileUrl = url,
             FileSize = file.Length,
             FileType = Path.GetExtension(file.FileName).TrimStart('.').ToLowerInvariant(),
-            PublicId = publicId
+            PublicId = publicId,
+            KybKind = parsedKybKind
         };
 
         await _farmDocumentRepository.AddAsync(document);
+        await RequeueKybIfNeededAsync(userId);
         await _unitOfWork.SaveChangesAsync();
 
         var dto = MapToDocumentDto(document);
@@ -611,7 +649,7 @@ public class FarmService : IFarmService
 
     public async Task<Result> CounterOfferAsync(Guid userId, Guid matchId, CounterOfferRequest request)
     {
-        var match = await _farmMatchRepository.GetByIdAsync(matchId);
+        var match = await _farmRepository.GetFarmMatchByIdAsync(userId, matchId);
         if (match is null)
             return Result.Failure(FarmErrors.MatchNotFound);
 
@@ -632,14 +670,25 @@ public class FarmService : IFarmService
         if (request.QuantityTons is <= 0 || request.PricePerTon is < 0)
             return Result.Failure(FarmErrors.InvalidCounterOffer);
 
-        match.CounterQuantityTons = request.QuantityTons;
-        match.CounterPricePerTon = request.PricePerTon;
-        match.CounterDeliveryDate = NormalizeDate(request.DeliveryDate);
-        match.CounterNote = string.IsNullOrWhiteSpace(request.Note) ? null : request.Note.Trim();
-        match.CounteredAt = DateTime.UtcNow;
-        match.CounterAccepted = false;
-        match.Status = FarmMatchStatus.Countered;
+        if (!MatchMessaging.CanAddRound(match))
+            return Result.Failure(FarmErrors.NegotiationRoundLimit);
 
+        var spendAccept = ShouldSpendFarmAccept(match);
+        if (spendAccept && _subscriptions is not null)
+        {
+            var quota = await _subscriptions.EnsureCanConsumeAsync(userId, SubscriptionMetric.FarmAccepts);
+            if (quota.IsFailure)
+                return quota;
+        }
+
+        MatchNegotiationWriter.Append(
+            match,
+            DealParty.Farm,
+            request.QuantityTons,
+            request.PricePerTon,
+            NormalizeDate(request.DeliveryDate),
+            request.Note,
+            request.Grade);
         _farmMatchRepository.Update(match);
 
         var detailed = await _farmRepository.GetFarmMatchByIdAsync(userId, matchId);
@@ -659,6 +708,54 @@ public class FarmService : IFarmService
         }
 
         await _unitOfWork.SaveChangesAsync();
+        if (spendAccept && _subscriptions is not null)
+            await _subscriptions.ConsumeAsync(userId, SubscriptionMetric.FarmAccepts);
+        return Result.Success();
+    }
+
+    public async Task<Result> AcceptCounterOfferAsync(Guid userId, Guid matchId)
+    {
+        var match = await _farmRepository.GetFarmMatchByIdAsync(userId, matchId);
+        if (match is null)
+            return Result.Failure(FarmErrors.MatchNotFound);
+
+        var farm = await _farmRepository.GetByUserIdAsync(userId);
+        if (farm is null || match.FarmId != farm.FarmId)
+            return Result.Failure(FarmErrors.MatchNotFound);
+
+        if (!MatchMessaging.CanAcceptCounter(match, DealParty.Farm))
+            return Result.Failure(FarmErrors.MatchNotCountered);
+
+        var spendAccept = ShouldSpendFarmAccept(match);
+        if (spendAccept && _subscriptions is not null)
+        {
+            var quota = await _subscriptions.EnsureCanConsumeAsync(userId, SubscriptionMetric.FarmAccepts);
+            if (quota.IsFailure)
+                return quota;
+        }
+
+        match.CounterAccepted = true;
+        match.Status = FarmMatchStatus.Proposed;
+        _farmMatchRepository.Update(match);
+
+        var factoryUserId = match.SupplyRequest?.Factory?.UserId;
+        if (factoryUserId is Guid uid && uid != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = uid,
+                Title = "Factory counter-offer accepted",
+                Message = $"{farm.Name} accepted your counter terms. You can proceed to the contract.",
+                Type = "Match",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+        if (spendAccept && _subscriptions is not null)
+            await _subscriptions.ConsumeAsync(userId, SubscriptionMetric.FarmAccepts);
         return Result.Success();
     }
 
@@ -672,50 +769,18 @@ public class FarmService : IFarmService
             farm.FarmCertifications.Select(MapCertificationDto).ToList());
     }
 
-    public async Task<Result> AddCertificationAsync(Guid userId, AddFarmCertificationRequest request)
+    public Task<Result> AddCertificationAsync(Guid userId, AddFarmCertificationRequest request)
     {
-        var farm = await _farmRepository.GetFarmWithDetailsAsync(userId);
-        if (farm is null)
-            return Result.Failure(FarmErrors.FarmNotFound);
-
-        var issuedAt = request.IssuedAt ?? DateTime.UtcNow;
-        if (request.ExpiresAt is not null && request.ExpiresAt <= issuedAt)
-            return Result.Failure(FarmErrors.InvalidCertificationDates);
-
-        var certification = await _certificationRepository.GetByIdAsync(request.CertificationId);
-        if (certification is null)
-            return Result.Failure(FarmErrors.CertificationNotFound);
-
-        if (farm.FarmCertifications.Any(c => c.CertificationId == request.CertificationId))
-            return Result.Failure(FarmErrors.CertificationAlreadyAdded);
-
-        farm.FarmCertifications.Add(new FarmCertification
-        {
-            FarmId = farm.FarmId,
-            CertificationId = request.CertificationId,
-            IssuedAt = issuedAt,
-            ExpiresAt = request.ExpiresAt,
-            Certification = certification
-        });
-        await _unitOfWork.SaveChangesAsync();
-
-        return Result.Success();
+        _ = userId;
+        _ = request;
+        return Task.FromResult(Result.Failure(FarmErrors.CertificationForbidden));
     }
 
-    public async Task<Result> DeleteCertificationAsync(Guid userId, Guid certificationId)
+    public Task<Result> DeleteCertificationAsync(Guid userId, Guid certificationId)
     {
-        var farm = await _farmRepository.GetFarmWithDetailsAsync(userId);
-        if (farm is null)
-            return Result.Failure(FarmErrors.FarmNotFound);
-
-        var link = farm.FarmCertifications.FirstOrDefault(c => c.CertificationId == certificationId);
-        if (link is null)
-            return Result.Failure(FarmErrors.CertificationNotOnFarm);
-
-        farm.FarmCertifications.Remove(link);
-        await _unitOfWork.SaveChangesAsync();
-
-        return Result.Success();
+        _ = userId;
+        _ = certificationId;
+        return Task.FromResult(Result.Failure(FarmErrors.CertificationForbidden));
     }
 
     public async Task<Result<FarmMatchesListResponse>> GetMatchesAsync(
@@ -780,7 +845,21 @@ public class FarmService : IFarmService
         CreatedAt = m.CreatedAt,
         ContractId = m.Contract?.ContractId,
         ContractFullySigned = m.Contract?.Status == ContractStatus.Signed,
-        CanMessage = m.Contract?.Status == ContractStatus.Signed,
+        CanMessage = MatchMessaging.CanMessage(m),
+        NegotiationRounds = (m.NegotiationRounds ?? Array.Empty<MatchNegotiationRound>())
+            .OrderBy(r => r.CreatedAt)
+            .Select(r => new NileChain.Application.Dtos.Factory.MatchNegotiationRoundDto
+            {
+                RoundId = r.RoundId,
+                OfferedBy = r.OfferedBy.ToString(),
+                QuantityTons = r.QuantityTons,
+                PricePerTon = r.PricePerTon,
+                DeliveryDate = r.DeliveryDate,
+                Grade = r.Grade,
+                Note = r.Note,
+                CreatedAt = r.CreatedAt
+            })
+            .ToList(),
         CounterQuantityTons = m.CounterQuantityTons,
         CounterPricePerTon = m.CounterPricePerTon,
         CounterDeliveryDate = m.CounterDeliveryDate,
@@ -1055,6 +1134,22 @@ public class FarmService : IFarmService
     private static DateTime? NormalizeDate(DateTime? value) =>
         value?.Date;
 
+    private async Task RequeueKybIfNeededAsync(Guid userId)
+    {
+        if (_userManager is null)
+            return;
+
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user is null || user.IsVerified)
+            return;
+
+        if (user.KybReviewStatus is KybReviewStatus.Rejected or KybReviewStatus.RequestInfo)
+        {
+            user.KybReviewStatus = KybReviewStatus.Pending;
+            await _userManager.UpdateAsync(user);
+        }
+    }
+
     private static FarmDocumentDto MapToDocumentDto(FarmDocument document)
     {
         return new FarmDocumentDto
@@ -1063,7 +1158,8 @@ public class FarmService : IFarmService
             Name = document.FileName,
             FileUrl = document.FileUrl,
             Size = FormatFileSize(document.FileSize),
-            FileType = document.FileType
+            FileType = document.FileType,
+            KybKind = document.KybKind.ToString()
         };
     }
 
@@ -1140,7 +1236,13 @@ public class FarmService : IFarmService
         return Result<FarmContractDto>.Success(MapContract(contract));
     }
 
-    public async Task<Result<FarmContractDto>> ApproveContractAsync(Guid userId, Guid contractId)
+    public async Task<Result<FarmContractDto>> ApproveContractAsync(
+        Guid userId,
+        Guid contractId,
+        string? otpCode,
+        string? ipAddress,
+        string? userAgent,
+        string? consentText)
     {
         var farm = await _farmRepository.GetByUserIdAsync(userId);
         if (farm is null)
@@ -1183,6 +1285,21 @@ public class FarmService : IFarmService
             return Result<FarmContractDto>.Failure(FarmErrors.ContractNotPending);
         }
 
+        var spendAccept = ShouldSpendFarmAccept(match);
+        if (spendAccept && _subscriptions is not null)
+        {
+            var quota = await _subscriptions.EnsureCanConsumeAsync(userId, SubscriptionMetric.FarmAccepts);
+            if (quota.IsFailure)
+                return Result<FarmContractDto>.Failure(quota.Error!);
+        }
+
+        if (_signingOtp is not null)
+        {
+            var otpResult = await _signingOtp.VerifyAndConsumeAsync(contractId, userId, otpCode);
+            if (otpResult.IsFailure)
+                return Result<FarmContractDto>.Failure(otpResult.Error!);
+        }
+
         if (!ContractDealFunding.TryGetDealTotalEgp(match, out var dealTotalEgp))
             return Result<FarmContractDto>.Failure(WalletErrors.DealValueInvalid);
 
@@ -1201,7 +1318,22 @@ public class FarmService : IFarmService
                 return Result<FarmContractDto>.Failure(fundsOk.Error!);
         }
 
-        contract.FarmSignedAt = DateTime.UtcNow;
+        var signedAt = DateTime.UtcNow;
+        if (_signatures is not null && _contractHash is not null)
+        {
+            await AdvancedSignatureWriter.AppendAsync(
+                _signatures,
+                _contractHash,
+                contract,
+                userId,
+                signedAt,
+                ipAddress,
+                userAgent,
+                consentText ?? string.Empty,
+                completingFullSign);
+        }
+
+        contract.FarmSignedAt = signedAt;
         // FactorySignedAt must remain unchanged.
         contract.RefreshSignatureStatus();
         ContractExecution.AcceptMatchIfFullySigned(contract);
@@ -1253,6 +1385,12 @@ public class FarmService : IFarmService
         var approveSaved = await TrySaveContractChangesAsync();
         if (approveSaved.IsFailure)
             return Result<FarmContractDto>.Failure(approveSaved.Error!);
+
+        if (spendAccept && _subscriptions is not null)
+            await _subscriptions.ConsumeAsync(userId, SubscriptionMetric.FarmAccepts);
+
+        if (contract.IsFullySigned && _email is not null && _logger is not null)
+            await SignatureConfirmationEmail.TrySendToBothPartiesAsync(_email, _logger, contract);
 
         if (contract.IsFullySigned)
         {
@@ -1515,6 +1653,14 @@ public class FarmService : IFarmService
         };
     }
 
+    private static bool FarmHasCommittedToMatch(FarmMatch? match) =>
+        match?.NegotiationRounds?.Any(r => r.OfferedBy == DealParty.Farm) == true;
+
+    private static bool ShouldSpendFarmAccept(FarmMatch? match) =>
+        match is not null
+        && match.Status is FarmMatchStatus.Proposed or FarmMatchStatus.Countered
+        && !FarmHasCommittedToMatch(match);
+
     private static bool IsPartyActive(NileChain.Domain.Identity.ApplicationUser? user) =>
         user is null || user.IsActive;
 
@@ -1563,7 +1709,7 @@ public class FarmService : IFarmService
         if (match is null)
             return Result<List<MessageDto>>.Failure(FarmErrors.ConversationNotFound);
 
-        if (match.Contract is null || match.Contract.Status != ContractStatus.Signed)
+        if (!MatchMessaging.CanMessage(match))
             return Result<List<MessageDto>>.Failure(FarmErrors.CannotSendMessage);
 
         var messages = await _farmRepository.GetMessagesAsync(userId, matchId);
@@ -1593,7 +1739,7 @@ public class FarmService : IFarmService
         if (match is null)
             return Result.Failure(FarmErrors.ConversationNotFound);
 
-        if (match.Contract is null || match.Contract.Status != ContractStatus.Signed)
+        if (!MatchMessaging.CanMessage(match))
             return Result.Failure(FarmErrors.CannotSendMessage);
 
         if (string.IsNullOrWhiteSpace(content))
@@ -1657,7 +1803,7 @@ public class FarmService : IFarmService
             ActiveMatchId = active.MatchId,
             ActiveContractId = active.Contract?.ContractId,
             ContractFullySigned = active.Contract?.Status == ContractStatus.Signed,
-            CanMessage = active.Contract?.Status == ContractStatus.Signed
+            CanMessage = MatchMessaging.CanMessage(active)
         });
     }
 

@@ -23,6 +23,9 @@ public sealed class WalletService : IWalletService
     /// <summary>Well-known owner id for the NileChain platform fee wallet.</summary>
     public static readonly Guid PlatformOwnerId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
+    public const decimal SubscriptionMonthlyUsd = 30m;
+    public const decimal SubscriptionMonthlyEgp = 1500m;
+
     private readonly IWalletRepository _wallets;
     private readonly IFarmRepository _farms;
     private readonly IFactoryRepository _factories;
@@ -31,6 +34,7 @@ public sealed class WalletService : IWalletService
     private readonly MockPaymentOptions _payments;
     private readonly PaymobOptions _paymobOptions;
     private readonly ILogger<WalletService> _logger;
+    private readonly SubscriptionOptions _subscriptions;
 
     public WalletService(
         IWalletRepository wallets,
@@ -40,7 +44,8 @@ public sealed class WalletService : IWalletService
         IPaymobClient paymob,
         IOptions<MockPaymentOptions> payments,
         IOptions<PaymobOptions> paymobOptions,
-        ILogger<WalletService> logger)
+        ILogger<WalletService> logger,
+        IOptions<SubscriptionOptions>? subscriptions = null)
     {
         _wallets = wallets;
         _farms = farms;
@@ -50,6 +55,7 @@ public sealed class WalletService : IWalletService
         _payments = payments.Value;
         _paymobOptions = paymobOptions.Value;
         _logger = logger;
+        _subscriptions = subscriptions?.Value ?? new SubscriptionOptions();
     }
 
     public async Task<Result<WalletDto>> GetMineAsync(Guid userId, bool asFarm)
@@ -60,6 +66,67 @@ public sealed class WalletService : IWalletService
 
         var wallet = await GetOrCreateWalletAsync(owner.Value.OwnerType, owner.Value.OwnerId);
         await _unitOfWork.SaveChangesAsync();
+        return Result<WalletDto>.Success(await MapAsync(wallet));
+    }
+
+    public async Task<Result<WalletDto>> PaySubscriptionMonthAsync(Guid userId, bool asFarm)
+    {
+        var owner = await ResolveOwnerAsync(userId, asFarm);
+        if (owner.IsFailure)
+            return Result<WalletDto>.Failure(owner.Error!);
+
+        var monthlyEgp = asFarm ? _subscriptions.FarmProEgp : _subscriptions.FactoryProEgp;
+        if (monthlyEgp <= 0)
+            monthlyEgp = asFarm ? 800m : SubscriptionMonthlyEgp;
+
+        var wallet = await GetOrCreateWalletAsync(owner.Value.OwnerType, owner.Value.OwnerId);
+        await _unitOfWork.SaveChangesAsync();
+
+        if (wallet.AvailableBalanceEgp < monthlyEgp)
+            return Result<WalletDto>.Failure(WalletErrors.SubscriptionInsufficient);
+
+        await using var tx = await _unitOfWork.BeginTransactionAsync();
+        var now = DateTime.UtcNow;
+        wallet.AvailableBalanceEgp -= monthlyEgp;
+        var from = wallet.SubscriptionPaidThroughUtc is DateTime paidThrough && paidThrough > now
+            ? paidThrough
+            : now;
+        wallet.SubscriptionPaidThroughUtc = from.AddDays(30);
+        wallet.UpdatedAt = now;
+
+        var roleLabel = asFarm ? "Farm" : "Factory";
+        await _wallets.AddLedgerAsync(new WalletLedgerEntry
+        {
+            LedgerEntryId = Guid.NewGuid(),
+            WalletId = wallet.WalletId,
+            EntryType = WalletLedgerType.Adjustment,
+            AmountEgp = -monthlyEgp,
+            AvailableAfterEgp = wallet.AvailableBalanceEgp,
+            HeldAfterEgp = wallet.HeldBalanceEgp,
+            Description = $"NileChain {roleLabel} Pro ({monthlyEgp:0} EGP / 30 days)",
+            ReferenceType = "SubscriptionMonth",
+            CreatedAt = now
+        });
+
+        var platformWallet = await GetOrCreateWalletAsync(WalletOwnerType.Platform, PlatformOwnerId);
+        platformWallet.AvailableBalanceEgp += monthlyEgp;
+        platformWallet.UpdatedAt = now;
+        await _wallets.AddLedgerAsync(new WalletLedgerEntry
+        {
+            LedgerEntryId = Guid.NewGuid(),
+            WalletId = platformWallet.WalletId,
+            EntryType = WalletLedgerType.PlatformFee,
+            AmountEgp = monthlyEgp,
+            AvailableAfterEgp = platformWallet.AvailableBalanceEgp,
+            HeldAfterEgp = platformWallet.HeldBalanceEgp,
+            Description = $"{roleLabel} subscription",
+            ReferenceType = "SubscriptionMonth",
+            ReferenceId = wallet.WalletId,
+            CreatedAt = now
+        });
+
+        await _unitOfWork.SaveChangesAsync();
+        await tx.CommitAsync();
         return Result<WalletDto>.Success(await MapAsync(wallet));
     }
 
@@ -388,6 +455,87 @@ public sealed class WalletService : IWalletService
         await tx.CommitAsync();
 
         return Result<WalletWithdrawalDto>.Success(MapWithdrawal(withdrawal));
+    }
+
+    public async Task<Result<AdminWithdrawalListDto>> ListWithdrawalsForAdminAsync(string? status, int take = 100)
+    {
+        take = Math.Clamp(take, 1, 200);
+        WalletWithdrawalStatus? parsed = null;
+        if (!string.IsNullOrWhiteSpace(status)
+            && Enum.TryParse<WalletWithdrawalStatus>(status, ignoreCase: true, out var s))
+        {
+            parsed = s;
+        }
+
+        var rows = await _wallets.ListWithdrawalsAsync(parsed, take);
+        return Result<AdminWithdrawalListDto>.Success(new AdminWithdrawalListDto
+        {
+            TotalCount = rows.Count,
+            Items = rows.Select(w => MapAdminWithdrawal(w)).ToList()
+        });
+    }
+
+    public async Task<Result<AdminWithdrawalDto>> CompleteWithdrawalAsync(Guid adminUserId, Guid withdrawalId)
+    {
+        _ = adminUserId;
+        var withdrawal = await _wallets.GetWithdrawalByIdAsync(withdrawalId, tracking: true);
+        if (withdrawal is null)
+            return Result<AdminWithdrawalDto>.Failure(WalletErrors.WithdrawalNotFound);
+
+        if (withdrawal.Status is not WalletWithdrawalStatus.Pending and not WalletWithdrawalStatus.Processing)
+            return Result<AdminWithdrawalDto>.Failure(WalletErrors.WithdrawalInvalidState);
+
+        var now = DateTime.UtcNow;
+        withdrawal.Status = WalletWithdrawalStatus.Completed;
+        withdrawal.CompletedAt = now;
+        withdrawal.UpdatedAt = now;
+        await _unitOfWork.SaveChangesAsync();
+        var wallet = await _wallets.GetByIdAsync(withdrawal.WalletId, tracking: false);
+        return Result<AdminWithdrawalDto>.Success(MapAdminWithdrawal(withdrawal, wallet));
+    }
+
+    public async Task<Result<AdminWithdrawalDto>> RejectWithdrawalAsync(
+        Guid adminUserId,
+        Guid withdrawalId,
+        string? reason)
+    {
+        _ = adminUserId;
+        var withdrawal = await _wallets.GetWithdrawalByIdAsync(withdrawalId, tracking: true);
+        if (withdrawal is null)
+            return Result<AdminWithdrawalDto>.Failure(WalletErrors.WithdrawalNotFound);
+
+        if (withdrawal.Status is not WalletWithdrawalStatus.Pending and not WalletWithdrawalStatus.Processing)
+            return Result<AdminWithdrawalDto>.Failure(WalletErrors.WithdrawalInvalidState);
+
+        var wallet = await _wallets.GetByIdAsync(withdrawal.WalletId, tracking: true);
+        if (wallet is null)
+            return Result<AdminWithdrawalDto>.Failure(WalletErrors.NotFound);
+
+        await using var tx = await _unitOfWork.BeginTransactionAsync();
+        var now = DateTime.UtcNow;
+        wallet.AvailableBalanceEgp += withdrawal.AmountEgp;
+        wallet.UpdatedAt = now;
+        withdrawal.Status = WalletWithdrawalStatus.Cancelled;
+        withdrawal.FailReason = string.IsNullOrWhiteSpace(reason) ? "Rejected by treasury" : reason.Trim();
+        withdrawal.UpdatedAt = now;
+
+        await _wallets.AddLedgerAsync(new WalletLedgerEntry
+        {
+            LedgerEntryId = Guid.NewGuid(),
+            WalletId = wallet.WalletId,
+            EntryType = WalletLedgerType.RefundToFactory,
+            AmountEgp = withdrawal.AmountEgp,
+            AvailableAfterEgp = wallet.AvailableBalanceEgp,
+            HeldAfterEgp = wallet.HeldBalanceEgp,
+            Description = $"Withdrawal rejected: {withdrawal.FailReason}",
+            ReferenceType = "WalletWithdrawal",
+            ReferenceId = withdrawal.WithdrawalId,
+            CreatedAt = now
+        });
+
+        await _unitOfWork.SaveChangesAsync();
+        await tx.CommitAsync();
+        return Result<AdminWithdrawalDto>.Success(MapAdminWithdrawal(withdrawal, wallet));
     }
 
     public async Task<Result<Guid>> HoldForEscrowAsync(
@@ -788,7 +936,19 @@ public sealed class WalletService : IWalletService
             PaymobConfigured = _paymob.IsConfigured,
             SimulatorAvailable = _paymobOptions.AllowLocalSimulator,
             PlatformFeePercent = _payments.PlatformFeePercent,
+            FeePayer = string.IsNullOrWhiteSpace(_payments.FeePayer) ? "Factory" : _payments.FeePayer,
+            FeeBase = string.IsNullOrWhiteSpace(_payments.FeeBase) ? "ReleasedAfterQc" : _payments.FeeBase,
             Disclaimer = WalletDisclaimer,
+            SubscriptionApplies = wallet.OwnerType is WalletOwnerType.Factory or WalletOwnerType.Farm,
+            SubscriptionMonthlyUsd = SubscriptionMonthlyUsd,
+            SubscriptionMonthlyEgp = wallet.OwnerType == WalletOwnerType.Farm
+                ? _subscriptions.FarmProEgp
+                : _subscriptions.FactoryProEgp,
+            SubscriptionPaidThroughUtc = wallet.SubscriptionPaidThroughUtc,
+            SubscriptionActive =
+                wallet.OwnerType is WalletOwnerType.Factory or WalletOwnerType.Farm
+                && wallet.SubscriptionPaidThroughUtc is DateTime through
+                && through > DateTime.UtcNow,
             RecentLedger = ledger.Select(e => new WalletLedgerItemDto
             {
                 LedgerEntryId = e.LedgerEntryId,
@@ -826,6 +986,22 @@ public sealed class WalletService : IWalletService
         new()
         {
             WithdrawalId = w.WithdrawalId,
+            AmountEgp = w.AmountEgp,
+            Status = w.Status.ToString(),
+            Method = w.Method,
+            DestinationSummary = w.DestinationSummary,
+            CreatedAt = w.CreatedAt,
+            CompletedAt = w.CompletedAt
+        };
+
+    private static AdminWithdrawalDto MapAdminWithdrawal(WalletWithdrawal w, Wallet? wallet = null) =>
+        new()
+        {
+            WithdrawalId = w.WithdrawalId,
+            WalletId = w.WalletId,
+            UserId = w.UserId,
+            OwnerType = (wallet ?? w.Wallet)?.OwnerType.ToString() ?? string.Empty,
+            OwnerId = (wallet ?? w.Wallet)?.OwnerId ?? Guid.Empty,
             AmountEgp = w.AmountEgp,
             Status = w.Status.ToString(),
             Method = w.Method,

@@ -7,6 +7,7 @@ public class FarmCertificationDto
     public DateTime IssuedAt { get; set; }
     public DateTime? ExpiresAt { get; set; }
     public bool IsExpired { get; set; }
+    public bool AdminGranted { get; set; }
 }
 
 public class AddFarmCertificationRequest

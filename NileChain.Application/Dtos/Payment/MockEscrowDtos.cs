@@ -14,8 +14,20 @@ public class MockEscrowSessionDto
     public string Currency { get; set; } = "EGP";
     public string Status { get; set; } = default!;
     public string Gateway { get; set; } = "Mock";
+    public string? CheckoutUrl { get; set; }
+    public bool SimulatorAvailable { get; set; }
     public string Disclaimer { get; set; } =
         "Demo mock payment — no real money is charged. NileChain simulates escrow + platform fee.";
+}
+
+public class EscrowReconciliationDto
+{
+    public List<EscrowTransactionDto> Items { get; set; } = [];
+    public int PendingCount { get; set; }
+    public int HeldCount { get; set; }
+    public int FailedCount { get; set; }
+    public string Disclaimer { get; set; } =
+        "Sandbox reconciliation — not a Paymob merchant settlement report.";
 }
 
 public class EscrowTransactionDto

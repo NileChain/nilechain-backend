@@ -9,6 +9,7 @@ namespace NileChain.API.Controllers;
 [Route("api/crop-types")]
 [ApiController]
 [Authorize]
+[NileChain.API.Filters.AllowUnverified]
 public class CropTypesController : ControllerBase
 {
     private readonly IRepository<CropType> _cropTypeRepository;

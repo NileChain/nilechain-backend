@@ -15,6 +15,7 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
     public async Task<Factory?> GetFactoryWithDetailsAsync(Guid userId) =>
         await Context.Factory
             .Include(f => f.User)
+            .Include(f => f.FactoryDocuments)
             .FirstOrDefaultAsync(f => f.UserId == userId);
 
     public async Task<SupplyRequest?> GetSupplyRequestByIdAsync(Guid requestId) =>
@@ -115,6 +116,7 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
                 Context.FarmMatches
                     .Include(fm => fm.Farm)
                     .Include(fm => fm.Contract)
+                    .Include(fm => fm.NegotiationRounds)
                     .Include(fm => fm.SupplyRequest)
                         .ThenInclude(sr => sr.CropType)
                     .Where(fm =>
@@ -135,6 +137,7 @@ public class FactoryRepository : Repository<Factory>, IFactoryRepository
             .Include(m => m.SupplyRequest)
                 .ThenInclude(r => r.CropType)
             .Include(m => m.Contract)
+            .Include(m => m.NegotiationRounds)
             .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SupplyRequest.FactoryId == factoryId);
 
     public async Task<List<FarmCrop>> GetPublishedFarmCropsAsync(Guid? cropTypeId, string? governorate)

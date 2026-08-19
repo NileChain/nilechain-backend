@@ -13,6 +13,7 @@ using NileChain.AI.Models;
 using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Sbg;
+using NileChain.AI.Telemetry;
 using NileChain.AI.Verification;
 
 // Guardrail unit smoke (no network)
@@ -103,15 +104,20 @@ services.Configure<SbgOptions>(o =>
 });
 services.AddHttpClient<SbgStudentChatClient>();
 services.AddSingleton<IConfiguration>(config);
+services.AddSingleton<LlmUsageLedger>();
 var sp = services.BuildServiceProvider();
 var sbg = sp.GetRequiredService<SbgStudentChatClient>();
+
+var usageLedger = sp.GetRequiredService<LlmUsageLedger>();
+var pricing = new LlmPricing(config);
 
 var kernel = LlmKernelFactory.CreateKernel(
     config,
     out var unavailable,
     out var nativeTools,
     out var provider,
-    sbg);
+    sbg,
+    usageLedger);
 
 Record(
     "LlmKernelFactory creates SBG kernel",
@@ -162,7 +168,14 @@ try
     var chroma = new ChromaService(chromaClient);
     var rag = new RagPipeline(chroma);
     var contractPlugin = new ContractPlugin();
-    var contractAgent = new ContractAgent(providerKernel, contractPlugin, rag);
+    var contractAgent = new ContractAgent(
+        providerKernel,
+        contractPlugin,
+        rag,
+        config,
+        sbg,
+        usageLedger,
+        sp.GetRequiredService<ILogger<ContractAgent>>());
 
     var request = new AgentRequest
     {
@@ -197,6 +210,17 @@ catch (Exception ex)
 {
     Record("ContractAgent via Student Gateway", false, ex.Message);
 }
+
+// Telemetry: whatever the calls above did must now be visible in the ledger.
+var usage = usageLedger.Summarize(pricing);
+Record(
+    "LlmUsageLedger recorded the live calls",
+    usage.Calls > 0 && usage.LlmLatencyMs > 0,
+    $"calls={usage.Calls}; providers={usage.Providers ?? "-"}; models={usage.Models ?? "-"}; "
+    + $"prompt={usage.PromptTokens?.ToString() ?? "unknown"}; "
+    + $"completion={usage.CompletionTokens?.ToString() ?? "unknown"}; "
+    + $"latency={usage.LlmLatencyMs}ms; "
+    + $"cost={usage.EstimatedCostUsd?.ToString("0.000000") ?? "unpriced"}");
 
 // Static checks
 var aiRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "NileChain.AI"));

@@ -10,7 +10,7 @@ public interface IFarmService
     Task<Result<FarmProfileResponse>> GetProfileAsync(Guid userId);
     Task<Result<FarmDashboardResponse>> GetDashboardAsync(Guid userId);
     Task<Result> UpdateProfileAsync(Guid userId, UpdateFarmProfileRequest request);
-    Task<Result<FarmDocumentDto>> AddDocumentAsync(Guid userId, IFormFile file);
+    Task<Result<FarmDocumentDto>> AddDocumentAsync(Guid userId, IFormFile file, string? kybKind);
     Task<Result<List<FarmDocumentDto>>> GetDocumentsAsync(Guid userId);
     Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId);
     Task<Result> AddCropAsync(Guid userId, AddCropRequest request);
@@ -19,6 +19,7 @@ public interface IFarmService
     Task<Result<FarmImageDto>> AddImageAsync(Guid userId, IFormFile file);
     Task<Result> DeleteImageAsync(Guid userId, Guid imageId);
     Task<Result> CounterOfferAsync(Guid userId, Guid matchId, CounterOfferRequest request);
+    Task<Result> AcceptCounterOfferAsync(Guid userId, Guid matchId);
     Task<Result<List<FarmCertificationDto>>> GetCertificationsAsync(Guid userId);
     Task<Result> AddCertificationAsync(Guid userId, AddFarmCertificationRequest request);
     Task<Result> DeleteCertificationAsync(Guid userId, Guid certificationId);
@@ -35,7 +36,13 @@ public interface IFarmService
     Task<Result<FarmContractDto>> GetOrCreateContractForMatchAsync(Guid userId, Guid matchId);
     Task<Result<List<FarmContractDto>>> GetContractsAsync(Guid userId);
     Task<Result<FarmContractDto>> GetContractAsync(Guid userId, Guid contractId);
-    Task<Result<FarmContractDto>> ApproveContractAsync(Guid userId, Guid contractId);
+    Task<Result<FarmContractDto>> ApproveContractAsync(
+        Guid userId,
+        Guid contractId,
+        string? otpCode,
+        string? ipAddress,
+        string? userAgent,
+        string? consentText);
     Task<Result<FarmContractDto>> RejectContractAsync(Guid userId, Guid contractId);
     Task<Result<(byte[] PdfBytes, string FileName)>> GetContractPdfAsync(Guid userId, Guid contractId);
     Task<Result<List<ConversationDto>>> GetConversationsAsync(Guid userId);

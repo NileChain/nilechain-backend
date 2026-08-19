@@ -7,4 +7,5 @@ public class FarmDocumentDto
     public string FileUrl { get; set; } = default!;
     public string Size { get; set; } = default!;
     public string FileType { get; set; } = default!;
+    public string KybKind { get; set; } = "Other";
 }

@@ -52,6 +52,7 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
     {
         var query = Context.FarmMatches
             .Include(fm => fm.Contract)
+            .Include(fm => fm.NegotiationRounds)
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.Factory)
             .Include(fm => fm.SupplyRequest)
@@ -113,6 +114,7 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
         take = Math.Clamp(take, 1, 20);
         return await Context.FarmMatches
             .Include(fm => fm.Contract)
+            .Include(fm => fm.NegotiationRounds)
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.Factory)
             .Include(fm => fm.SupplyRequest)
@@ -136,6 +138,7 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
     {
         var query = Context.FarmMatches
             .Include(fm => fm.Contract)
+            .Include(fm => fm.NegotiationRounds)
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.Factory)
             .Include(fm => fm.SupplyRequest)
@@ -180,6 +183,7 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
                     .ThenInclude(f => f!.User)
             .Include(fm => fm.SupplyRequest)
                 .ThenInclude(sr => sr.CropType)
+            .Include(fm => fm.NegotiationRounds)
             .FirstOrDefaultAsync(fm => fm.MatchId == matchId && fm.Farm.UserId == userId);
 
     public async Task<IReadOnlyList<Farm>> GetVerifiedFarmsByCropAsync(Guid cropTypeId, string? governorate) =>
@@ -218,6 +222,8 @@ public class FarmRepository : Repository<Farm>, IFarmRepository
             .Include(c => c.FarmMatch)
                 .ThenInclude(fm => fm.SupplyRequest)
                     .ThenInclude(sr => sr.CropType)
+            .Include(c => c.FarmMatch)
+                .ThenInclude(fm => fm.NegotiationRounds)
             .Include(c => c.IntegrityAnchors)
             .Include(c => c.Revisions)
             .Include(c => c.Fulfillment)

@@ -2,6 +2,7 @@ using NileChain.Application.Common;
 using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -116,6 +117,8 @@ public class ContractChangeRequestService : IContractChangeRequestService
                 Title = "Contract draft revised",
                 Message = $"{actorName} requested changes and the draft was updated: {preview}",
                 Type = "ContractRevision",
+                RelatedEntityType = NotificationRelations.Contract,
+                RelatedEntityId = contract.ContractId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             });

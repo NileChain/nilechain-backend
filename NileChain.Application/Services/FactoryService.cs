@@ -8,11 +8,16 @@ using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
 using NileChain.Application.Matching;
 using NileChain.Application.Options;
+using NileChain.Application.Validation;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
+using NileChain.Domain.Identity;
 using NileChain.Domain.Interfaces;
+using NileChain.Domain.Matching;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace NileChain.Application.Services;
@@ -21,11 +26,13 @@ public class FactoryService : IFactoryService
 {
     private readonly IFactoryRepository _factoryRepository;
     private readonly IRepository<CropType> _cropTypeRepository;
+    private readonly IRepository<FactoryDocument> _factoryDocumentRepository;
     private readonly IRepository<SupplyRequest> _supplyRequestRepository;
     private readonly IRepository<FarmMatch> _farmMatchRepository;
     private readonly IRepository<Contract> _contractRepository;
     private readonly IRepository<Message> _messageRepository;
     private readonly IRepository<Notification> _notificationRepository;
+    private readonly ICloudinaryService _cloudinaryService;
     private readonly IContractPdfService _pdfService;
     private readonly IFulfillmentService _fulfillmentService;
     private readonly IPaymentMilestoneService _paymentMilestoneService;
@@ -35,15 +42,24 @@ public class FactoryService : IFactoryService
     private readonly IContractIntegrityService _integrity;
     private readonly IUnitOfWork _unitOfWork;
     private readonly DeliveryTermsOptions _deliveryTerms;
+    private readonly ISigningOtpService _signingOtp;
+    private readonly IContractHashService _contractHash;
+    private readonly IContractSignatureRepository _signatures;
+    private readonly IEmailService _email;
+    private readonly ILogger<FactoryService> _logger;
+    private readonly UserManager<ApplicationUser>? _userManager;
+    private readonly ISubscriptionService? _subscriptions;
 
     public FactoryService(
         IFactoryRepository factoryRepository,
         IRepository<CropType> cropTypeRepository,
+        IRepository<FactoryDocument> factoryDocumentRepository,
         IRepository<SupplyRequest> supplyRequestRepository,
         IRepository<FarmMatch> farmMatchRepository,
         IRepository<Contract> contractRepository,
         IRepository<Message> messageRepository,
         IRepository<Notification> notificationRepository,
+        ICloudinaryService cloudinaryService,
         IContractPdfService pdfService,
         IFulfillmentService fulfillmentService,
         IPaymentMilestoneService paymentMilestoneService,
@@ -52,15 +68,24 @@ public class FactoryService : IFactoryService
         IMockEscrowPaymentService escrowPayments,
         IContractIntegrityService integrity,
         IUnitOfWork unitOfWork,
-        IOptions<DeliveryTermsOptions>? deliveryTerms = null)
+        IOptions<DeliveryTermsOptions>? deliveryTerms = null,
+        ISigningOtpService? signingOtp = null,
+        IContractHashService? contractHash = null,
+        IContractSignatureRepository? signatures = null,
+        IEmailService? email = null,
+        ILogger<FactoryService>? logger = null,
+        UserManager<ApplicationUser>? userManager = null,
+        ISubscriptionService? subscriptions = null)
     {
         _factoryRepository = factoryRepository;
         _cropTypeRepository = cropTypeRepository;
+        _factoryDocumentRepository = factoryDocumentRepository;
         _supplyRequestRepository = supplyRequestRepository;
         _farmMatchRepository = farmMatchRepository;
         _contractRepository = contractRepository;
         _messageRepository = messageRepository;
         _notificationRepository = notificationRepository;
+        _cloudinaryService = cloudinaryService;
         _pdfService = pdfService;
         _fulfillmentService = fulfillmentService;
         _paymentMilestoneService = paymentMilestoneService;
@@ -70,6 +95,13 @@ public class FactoryService : IFactoryService
         _integrity = integrity;
         _unitOfWork = unitOfWork;
         _deliveryTerms = deliveryTerms?.Value ?? new DeliveryTermsOptions();
+        _signingOtp = signingOtp!;
+        _contractHash = contractHash!;
+        _signatures = signatures!;
+        _email = email!;
+        _logger = logger!;
+        _userManager = userManager;
+        _subscriptions = subscriptions;
     }
 
     public async Task<Guid> RegisterFactoryAsync(Guid userId, string name, string governorate)
@@ -110,6 +142,91 @@ public class FactoryService : IFactoryService
         factory.IndustryType = request.IndustryType;
 
         _factoryRepository.Update(factory);
+        await _unitOfWork.SaveChangesAsync();
+        return Result.Success();
+    }
+
+    public async Task<Result<List<FactoryDocumentDto>>> GetDocumentsAsync(Guid userId)
+    {
+        var factory = await _factoryRepository.GetFactoryWithDetailsAsync(userId);
+        if (factory is null)
+            return Result<List<FactoryDocumentDto>>.Failure(FactoryErrors.FactoryNotFound);
+
+        var documents = (factory.FactoryDocuments ?? [])
+            .OrderByDescending(d => d.UploadedAt)
+            .Select(MapToDocumentDto)
+            .ToList();
+
+        return Result<List<FactoryDocumentDto>>.Success(documents);
+    }
+
+    public async Task<Result<FactoryDocumentDto>> AddDocumentAsync(
+        Guid userId,
+        Microsoft.AspNetCore.Http.IFormFile file,
+        string? kybKind)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactoryDocumentDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        if (file is null || file.Length <= 0)
+            return Result<FactoryDocumentDto>.Failure(new Error("File.Empty", "File is required."));
+
+        await using var probe = file.OpenReadStream();
+        var validation = FileUploadValidation.Validate(
+            file.FileName,
+            file.ContentType,
+            file.Length,
+            probe);
+
+        if (!validation.IsValid)
+        {
+            return Result<FactoryDocumentDto>.Failure(new Error(
+                validation.ErrorCode ?? "Factory.DocumentInvalid",
+                validation.ErrorMessage ?? "The uploaded document is invalid."));
+        }
+
+        var (url, publicId) = await _cloudinaryService.UploadAsync(file);
+
+        var parsedKybKind = Enum.TryParse<KybKind>(
+            kybKind,
+            ignoreCase: true,
+            out var kind)
+            ? kind
+            : KybKind.Other;
+
+        var document = new FactoryDocument
+        {
+            FactoryDocumentId = Guid.NewGuid(),
+            FactoryId = factory.FactoryId,
+            FileName = file.FileName,
+            FileUrl = url,
+            FileSize = file.Length,
+            FileType = file.ContentType,
+            PublicId = publicId,
+            KybKind = parsedKybKind
+        };
+
+        await _factoryDocumentRepository.AddAsync(document);
+        await RequeueKybIfNeededAsync(userId);
+        await _unitOfWork.SaveChangesAsync();
+
+        return Result<FactoryDocumentDto>.Success(MapToDocumentDto(document));
+    }
+
+    public async Task<Result> DeleteDocumentAsync(Guid userId, Guid documentId)
+    {
+        var factory = await _factoryRepository.GetFactoryWithDetailsAsync(userId);
+        if (factory is null)
+            return Result.Failure(FactoryErrors.FactoryNotFound);
+
+        var document = (factory.FactoryDocuments ?? [])
+            .FirstOrDefault(d => d.FactoryDocumentId == documentId);
+        if (document is null)
+            return Result.Failure(new Error("Factory.DocumentNotFound", "Document not found."));
+
+        await _cloudinaryService.DeleteAsync(document.PublicId);
+        _factoryDocumentRepository.Remove(document);
         await _unitOfWork.SaveChangesAsync();
         return Result.Success();
     }
@@ -172,6 +289,13 @@ public class FactoryService : IFactoryService
         if (terms.IsFailure)
             return Result<CreateSupplyRequestResponse>.Failure(terms.Error!);
 
+        if (_subscriptions is not null)
+        {
+            var quota = await _subscriptions.EnsureCanConsumeAsync(userId, SubscriptionMetric.FactoryRfqs);
+            if (quota.IsFailure)
+                return Result<CreateSupplyRequestResponse>.Failure(quota.Error!);
+        }
+
         var entity = new SupplyRequest
         {
             RequestId = Guid.NewGuid(),
@@ -211,6 +335,9 @@ public class FactoryService : IFactoryService
 
             throw;
         }
+
+        if (_subscriptions is not null)
+            await _subscriptions.ConsumeAsync(userId, SubscriptionMetric.FactoryRfqs);
 
         return Result<CreateSupplyRequestResponse>.Success(new CreateSupplyRequestResponse
         {
@@ -298,6 +425,135 @@ public class FactoryService : IFactoryService
         var fresh = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
         return Result<FactorySupplyRequestDetailDto>.Success(MapDetail(fresh ?? request));
     }
+
+    public async Task<Result<FactorySupplyRequestDetailDto>> UpdateRequestGeoScopeAsync(
+        Guid userId,
+        Guid requestId,
+        UpdateSupplyRequestGeoScopeRequest body)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var request = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        if (request is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        if (!CanMutateRequestTerms(request))
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestCannotUpdate);
+
+        var scope = (body.GeographicScope ?? string.Empty).Trim();
+        if (!IsValidGeoScope(scope))
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.InvalidGeoScope);
+
+        var parsed = StructuredQualitySpecs.Parse(request.QualitySpecs);
+        var govs = (body.SelectedGovernorates is { Count: > 0 }
+                ? body.SelectedGovernorates
+                : parsed.PreferredGovernorates)
+            .Select(g => g.Trim())
+            .Where(g => g.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        request.QualitySpecs = StructuredQualitySpecs.Pack(
+            parsed.Notes,
+            new StructuredQualityInput
+            {
+                MoistureMaxPercent = parsed.MoistureMaxPercent,
+                ImpuritiesMaxPercent = parsed.ImpuritiesMaxPercent,
+                Grade = parsed.Grade,
+                LabRequired = parsed.LabRequired,
+                Notes = parsed.Notes
+            },
+            govs,
+            scope,
+            parsed.PreferredFarmId);
+        request.FactoryApprovedOneRingExpansion = false;
+        _supplyRequestRepository.Update(request);
+        await _unitOfWork.SaveChangesAsync();
+
+        var fresh = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        return Result<FactorySupplyRequestDetailDto>.Success(MapDetail(fresh ?? request));
+    }
+
+    public async Task<Result<FactorySupplyRequestDetailDto>> ExpandGeoAsync(Guid userId, Guid requestId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var request = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        if (request is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        if (!CanMutateRequestTerms(request))
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestCannotUpdate);
+
+        if (request.FactoryApprovedOneRingExpansion)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.ExpansionAlreadyApproved);
+
+        if (_subscriptions is not null)
+        {
+            var flag = await _subscriptions.EnsureFeatureAsync(userId, SubscriptionFeatureFlag.ExpandGeo);
+            if (flag.IsFailure)
+                return Result<FactorySupplyRequestDetailDto>.Failure(flag.Error!);
+        }
+
+        var parsed = StructuredQualitySpecs.Parse(request.QualitySpecs);
+        if (string.Equals(parsed.GeographicScope, "Nationwide", StringComparison.OrdinalIgnoreCase))
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.InvalidGeoScope);
+
+        request.FactoryApprovedOneRingExpansion = true;
+        _supplyRequestRepository.Update(request);
+        await _unitOfWork.SaveChangesAsync();
+
+        var fresh = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        return Result<FactorySupplyRequestDetailDto>.Success(MapDetail(fresh ?? request));
+    }
+
+    public async Task<Result<FactorySupplyRequestDetailDto>> ShowMoreMatchesAsync(Guid userId, Guid requestId)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.FactoryNotFound);
+
+        var request = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        if (request is null)
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestNotFound);
+
+        if (!CanMutateRequestTerms(request))
+            return Result<FactorySupplyRequestDetailDto>.Failure(FactoryErrors.SupplyRequestCannotUpdate);
+
+        if (_subscriptions is not null)
+        {
+            var flag = await _subscriptions.EnsureFeatureAsync(userId, SubscriptionFeatureFlag.ShowMore);
+            if (flag.IsFailure)
+                return Result<FactorySupplyRequestDetailDto>.Failure(flag.Error!);
+        }
+
+        request.ShortlistTakeLimit = 15;
+        _supplyRequestRepository.Update(request);
+        await _unitOfWork.SaveChangesAsync();
+
+        var fresh = await _factoryRepository.GetSupplyRequestDetailAsync(factory.FactoryId, requestId);
+        return Result<FactorySupplyRequestDetailDto>.Success(MapDetail(fresh ?? request));
+    }
+
+    private static bool CanMutateRequestTerms(SupplyRequest request)
+    {
+        if (request.Status is SupplyRequestStatus.Cancelled or SupplyRequestStatus.Fulfilled)
+            return false;
+
+        return !request.FarmMatches.Any(m =>
+            m.Contract is not null
+            && m.Contract.Status == ContractStatus.Signed
+            && m.Contract.IsFullySigned);
+    }
+
+    private static bool IsValidGeoScope(string scope) =>
+        scope.Equals("Exact", StringComparison.OrdinalIgnoreCase)
+        || scope.Equals("Nearby", StringComparison.OrdinalIgnoreCase)
+        || scope.Equals("Nationwide", StringComparison.OrdinalIgnoreCase);
 
     public async Task<Result> CancelRequestAsync(Guid userId, Guid requestId)
     {
@@ -542,11 +798,55 @@ public class FactoryService : IFactoryService
             CanCancel = canCancel,
             CanRerunAgent = canRerun,
             CanUpdateDeliveryTerms = canCancel,
+            FactoryApprovedOneRingExpansion = r.FactoryApprovedOneRingExpansion,
+            ShortlistTakeLimit = r.ShortlistTakeLimit,
+            CanExpandGeo = canCancel
+                && !r.FactoryApprovedOneRingExpansion
+                && !string.Equals(quality.GeographicScope, "Nationwide", StringComparison.OrdinalIgnoreCase),
+            CanShowMoreMatches = canRerun && (r.ShortlistTakeLimit ?? 5) < 15,
+            CanUpdateGeoScope = canCancel,
             DeliveryPoint = r.DeliveryPoint.ToString(),
             FreightPayer = r.FreightPayer.ToString(),
             TransitRisk = r.TransitRisk.ToString()
         };
     }
+
+    private static List<MatchNegotiationRoundDto> MapNegotiationRounds(FarmMatch match) =>
+        (match.NegotiationRounds ?? Array.Empty<MatchNegotiationRound>())
+            .OrderBy(r => r.CreatedAt)
+            .Select(r => new MatchNegotiationRoundDto
+            {
+                RoundId = r.RoundId,
+                OfferedBy = r.OfferedBy.ToString(),
+                QuantityTons = r.QuantityTons,
+                PricePerTon = r.PricePerTon,
+                DeliveryDate = r.DeliveryDate,
+                Grade = r.Grade,
+                Note = r.Note,
+                CreatedAt = r.CreatedAt
+            })
+            .ToList();
+
+    private static List<MatchFactorDto> BuildWhyMatched(
+        FarmMatch match,
+        double? distanceKm,
+        bool usedGovernorateFallback) =>
+        MatchExplanation.Build(new MatchExplanationInputs
+        {
+            Snapshot = MatchEligibilitySnapshot.TryParse(match.EligibilitySnapshotJson),
+            CropName = match.SupplyRequest?.CropType?.Name,
+            FarmGovernorate = match.MatchedGovernorate ?? match.Farm?.Governorate,
+            IsVerified = match.Farm?.IsVerified ?? false,
+            TrustScore = match.RiskScore ?? match.Farm?.RiskScore,
+            MatchScore = match.MatchScore,
+            DistanceKm = distanceKm,
+            UsedGovernorateFallback = usedGovernorateFallback,
+            IsGeographicExpansion = match.IsGeographicExpansion,
+            RequestQuantityTons = match.SupplyRequest?.QuantityTons,
+            RequestPricePerTon = match.SupplyRequest?.PricePerTon
+        })
+        .Select(MatchFactorDto.From)
+        .ToList();
 
     private static Result<(DeliveryPoint Point, DealParty Freight, DealParty Transit)> ResolveDeliveryTerms(
         string? deliveryPoint,
@@ -847,7 +1147,10 @@ public class FactoryService : IFactoryService
                 CreatedAt = m.CreatedAt,
                 ContractId = m.Contract?.ContractId,
                 ContractFullySigned = m.Contract?.Status == ContractStatus.Signed,
-                CanMessage = m.Contract?.Status == ContractStatus.Signed,
+                CanMessage = MatchMessaging.CanMessage(m),
+                IsGeographicExpansion = m.IsGeographicExpansion,
+                WhyMatched = BuildWhyMatched(m, distanceKm, usedFallback),
+                NegotiationRounds = MapNegotiationRounds(m),
                 RequestQuantityTons = m.SupplyRequest?.QuantityTons,
                 RequestPricePerTon = m.SupplyRequest?.PricePerTon,
                 RequestDeliveryDate = m.SupplyRequest?.DeliveryDate,
@@ -923,7 +1226,7 @@ public class FactoryService : IFactoryService
         if (match is null)
             return Result.Failure(FactoryErrors.MatchNotFound);
 
-        if (match.Status != FarmMatchStatus.Countered || !MatchCommercialTerms.HasCounter(match))
+        if (!MatchMessaging.CanAcceptCounter(match, DealParty.Factory))
             return Result.Failure(FactoryErrors.MatchNotCountered);
 
         match.CounterAccepted = true;
@@ -973,6 +1276,60 @@ public class FactoryService : IFactoryService
                 UserId = farmUserId,
                 Title = "Counter-offer rejected",
                 Message = $"{factory.Name} rejected your counter terms.",
+                Type = "Match",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _unitOfWork.SaveChangesAsync();
+        return Result.Success();
+    }
+
+    public async Task<Result> CounterOfferAsync(Guid userId, Guid matchId, CounterOfferRequest request)
+    {
+        var factory = await _factoryRepository.GetByUserIdAsync(userId);
+        if (factory is null)
+            return Result.Failure(FactoryErrors.FactoryNotFound);
+
+        var match = await _factoryRepository.GetMatchForFactoryAsync(factory.FactoryId, matchId);
+        if (match is null)
+            return Result.Failure(FactoryErrors.MatchNotFound);
+
+        if (!MatchMessaging.CanNegotiate(match))
+            return Result.Failure(FactoryErrors.MatchNotProposed);
+
+        if (request.QuantityTons is null
+            && request.PricePerTon is null
+            && request.DeliveryDate is null)
+        {
+            return Result.Failure(FarmErrors.InvalidCounterOffer);
+        }
+
+        if (request.QuantityTons is <= 0 || request.PricePerTon is < 0)
+            return Result.Failure(FarmErrors.InvalidCounterOffer);
+
+        if (!MatchMessaging.CanAddRound(match))
+            return Result.Failure(FactoryErrors.NegotiationRoundLimit);
+
+        MatchNegotiationWriter.Append(
+            match,
+            DealParty.Factory,
+            request.QuantityTons,
+            request.PricePerTon,
+            request.DeliveryDate,
+            request.Note,
+            request.Grade);
+        _farmMatchRepository.Update(match);
+
+        if (match.Farm?.UserId is Guid farmUserId && farmUserId != Guid.Empty)
+        {
+            await _notificationRepository.AddAsync(new Notification
+            {
+                NotificationId = Guid.NewGuid(),
+                UserId = farmUserId,
+                Title = "Factory counter-offer received",
+                Message = $"{factory.Name} proposed alternate terms on a match.",
                 Type = "Match",
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
@@ -1138,7 +1495,7 @@ public class FactoryService : IFactoryService
             CreatedAt = match.CreatedAt,
             ContractId = match.Contract?.ContractId,
             ContractFullySigned = match.Contract?.Status == ContractStatus.Signed,
-            CanMessage = match.Contract?.Status == ContractStatus.Signed
+            CanMessage = MatchMessaging.CanMessage(match)
         });
     }
 
@@ -1152,7 +1509,7 @@ public class FactoryService : IFactoryService
         if (match is null)
             return Result<List<FactoryMessageDto>>.Failure(FactoryErrors.ConversationNotFound);
 
-        if (match.Contract is null || match.Contract.Status != ContractStatus.Signed)
+        if (!MatchMessaging.CanMessage(match))
             return Result<List<FactoryMessageDto>>.Failure(FactoryErrors.CannotSendMessage);
 
         var messages = await _factoryRepository.GetMessagesAsync(factory.FactoryId, matchId);
@@ -1180,7 +1537,7 @@ public class FactoryService : IFactoryService
         if (match is null)
             return Result.Failure(FactoryErrors.ConversationNotFound);
 
-        if (match.Contract is null || match.Contract.Status != ContractStatus.Signed)
+        if (!MatchMessaging.CanMessage(match))
             return Result.Failure(FactoryErrors.CannotSendMessage);
 
         if (string.IsNullOrWhiteSpace(content))
@@ -1337,7 +1694,13 @@ public class FactoryService : IFactoryService
         return Result<FactoryContractDto>.Success(MapContract(contract));
     }
 
-    public async Task<Result<FactoryContractDto>> ApproveContractAsync(Guid userId, Guid contractId)
+    public async Task<Result<FactoryContractDto>> ApproveContractAsync(
+        Guid userId,
+        Guid contractId,
+        string? otpCode,
+        string? ipAddress,
+        string? userAgent,
+        string? consentText)
     {
         var factory = await _factoryRepository.GetByUserIdAsync(userId);
         if (factory is null)
@@ -1380,6 +1743,13 @@ public class FactoryService : IFactoryService
             return Result<FactoryContractDto>.Failure(FactoryErrors.ContractNotPending);
         }
 
+        if (_signingOtp is not null)
+        {
+            var otpResult = await _signingOtp.VerifyAndConsumeAsync(contractId, userId, otpCode);
+            if (otpResult.IsFailure)
+                return Result<FactoryContractDto>.Failure(otpResult.Error!);
+        }
+
         if (!ContractDealFunding.TryGetDealTotalEgp(match, out var dealTotalEgp))
             return Result<FactoryContractDto>.Failure(WalletErrors.DealValueInvalid);
 
@@ -1390,7 +1760,23 @@ public class FactoryService : IFactoryService
         if (fundsOk.IsFailure)
             return Result<FactoryContractDto>.Failure(fundsOk.Error!);
 
-        contract.FactorySignedAt = DateTime.UtcNow;
+        var completingFullSign = contract.IsFarmSigned;
+        var signedAt = DateTime.UtcNow;
+        if (_signatures is not null && _contractHash is not null)
+        {
+            await AdvancedSignatureWriter.AppendAsync(
+                _signatures,
+                _contractHash,
+                contract,
+                userId,
+                signedAt,
+                ipAddress,
+                userAgent,
+                consentText ?? string.Empty,
+                completingFullSign);
+        }
+
+        contract.FactorySignedAt = signedAt;
         // FarmSignedAt must remain unchanged.
         contract.RefreshSignatureStatus();
         ContractExecution.AcceptMatchIfFullySigned(contract);
@@ -1442,6 +1828,9 @@ public class FactoryService : IFactoryService
         var approveSaved = await TrySaveFactoryContractAsync();
         if (approveSaved.IsFailure)
             return Result<FactoryContractDto>.Failure(approveSaved.Error!);
+
+        if (contract.IsFullySigned && _email is not null && _logger is not null)
+            await SignatureConfirmationEmail.TrySendToBothPartiesAsync(_email, _logger, contract);
 
         if (contract.IsFullySigned)
         {
@@ -1745,7 +2134,37 @@ public class FactoryService : IFactoryService
         IsVerified = factory.IsVerified,
         AverageRating = factory.AverageRating,
         RatingCount = factory.RatingCount,
-        CompletionPercent = CalculateCompletionPercent(factory)
+        CompletionPercent = CalculateCompletionPercent(factory),
+        Documents = (factory.FactoryDocuments ?? [])
+            .OrderByDescending(d => d.UploadedAt)
+            .Select(MapToDocumentDto)
+            .ToList()
+    };
+
+    private async Task RequeueKybIfNeededAsync(Guid userId)
+    {
+        if (_userManager is null)
+            return;
+
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user is null || user.IsVerified)
+            return;
+
+        if (user.KybReviewStatus is KybReviewStatus.Rejected or KybReviewStatus.RequestInfo)
+        {
+            user.KybReviewStatus = KybReviewStatus.Pending;
+            await _userManager.UpdateAsync(user);
+        }
+    }
+
+    private static FactoryDocumentDto MapToDocumentDto(FactoryDocument document) => new()
+    {
+        DocumentId = document.FactoryDocumentId,
+        Name = document.FileName,
+        FileUrl = document.FileUrl,
+        Size = FormatFileSize(document.FileSize),
+        FileType = document.FileType,
+        KybKind = document.KybKind.ToString()
     };
 
     private static int CalculateCompletionPercent(Factory factory)
@@ -1779,5 +2198,14 @@ public class FactoryService : IFactoryService
 
         var trimmed = raw.Trim();
         return trimmed.Length > 128 ? trimmed[..128] : trimmed;
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        if (bytes < 1024)
+            return $"{bytes} B";
+        if (bytes < 1024 * 1024)
+            return $"{bytes / 1024.0:F1} KB";
+        return $"{bytes / (1024.0 * 1024.0):F1} MB";
     }
 }

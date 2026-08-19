@@ -28,8 +28,13 @@ public static class DependencyInjection
         services.AddScoped<IPaymentMilestoneService, PaymentMilestoneService>();
         services.AddScoped<IMockEscrowPaymentService, MockEscrowPaymentService>();
         services.AddScoped<IWalletService, WalletService>();
+        services.AddScoped<ISubscriptionService, SubscriptionService>();
+        services.AddScoped<IOutboundChannel, LoggingOutboundChannel>();
         services.AddScoped<IDisputeService, DisputeService>();
         services.AddScoped<IContractIntegrityService, ContractIntegrityService>();
+        services.AddScoped<ISigningOtpService, SigningOtpService>();
+        services.AddSingleton<ISigningOtpRateLimiter, SigningOtpRateLimiter>();
+        services.AddScoped<IContractHashService, ContractHashService>();
         services.AddScoped<IContractDateAmendmentService, ContractDateAmendmentService>();
         services.AddScoped<IContractChangeRequestService, ContractChangeRequestService>();
         services.Configure<Options.PaymentMilestoneOptions>(
@@ -40,6 +45,10 @@ public static class DependencyInjection
             configuration.GetSection(Options.MockPaymentOptions.SectionName));
         services.Configure<Options.PaymobOptions>(
             configuration.GetSection(Options.PaymobOptions.SectionName));
+        services.Configure<Options.SigningOptions>(
+            configuration.GetSection(Options.SigningOptions.SectionName));
+        services.Configure<Options.SubscriptionOptions>(
+            configuration.GetSection(Options.SubscriptionOptions.SectionName));
 
         return services;
     }

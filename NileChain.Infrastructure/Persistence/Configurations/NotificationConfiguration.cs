@@ -11,7 +11,9 @@ public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
         builder.ToTable("Notification");
         builder.HasKey(n => n.NotificationId);
         builder.Property(n => n.Title).HasMaxLength(255).IsRequired();
-        builder.Property(n => n.Type).HasMaxLength(20);
+        builder.Property(n => n.Type).HasMaxLength(64);
+        builder.Property(n => n.RelatedEntityType).HasMaxLength(32);
+        builder.HasIndex(n => n.RelatedEntityId);
 
         builder.HasOne(n => n.User)
             .WithMany()

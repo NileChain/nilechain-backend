@@ -1,4 +1,7 @@
+using NileChain.Domain.Common;
+using NileChain.Domain.Constants;
 using NileChain.Domain.Entities;
+using NileChain.Domain.Enums;
 using NileChain.Domain.Identity;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -164,6 +167,29 @@ public static partial class DevelopmentDataSeeder
                 cropTypes = await db.CropTypes.ToListAsync();
                 certifications = await db.Certifications.ToListAsync();
                 demoReport = await SeedDemoProfilesAsync(db, userManager, cropTypes, certifications);
+                db.ChangeTracker.Clear();
+            });
+
+            await RunPhaseAsync("HandoverHygiene", async () =>
+            {
+                var adminId = admins.FirstOrDefault()?.Id ?? DemoIds.Admin1User;
+                await db.FarmCertifications
+                    .Where(c => c.GrantedByAdminUserId == null)
+                    .ExecuteUpdateAsync(s => s.SetProperty(c => c.GrantedByAdminUserId, adminId));
+            });
+
+            await RunPhaseAsync("WedgeTomatoQalyubia", async () =>
+            {
+                cropTypes = await db.CropTypes.ToListAsync();
+                certifications = await db.Certifications.ToListAsync();
+                var adminId = admins.FirstOrDefault()?.Id ?? DemoIds.Admin1User;
+                await SeedWedgeTomatoQalyubiaAsync(db, userManager, cropTypes, certifications, adminId);
+                db.ChangeTracker.Clear();
+            });
+
+            await RunPhaseAsync("MarketplaceSubscriptions", async () =>
+            {
+                await SeedMarketplaceSubscriptionsAsync(db, userManager);
                 db.ChangeTracker.Clear();
             });
 
@@ -438,6 +464,57 @@ public static partial class DevelopmentDataSeeder
             Errors: errors);
     }
 
+    private static async Task SeedMarketplaceSubscriptionsAsync(
+        NileChainDbContext db,
+        UserManager<ApplicationUser> userManager)
+    {
+        var now = DateTime.UtcNow;
+        var periodEnd = now.AddDays(365);
+        var skipEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "demo.farm.free@nilechain.dev",
+            "demo.factory.free@nilechain.dev"
+        };
+
+        async Task GrantProAsync(IList<ApplicationUser> users, string planCode)
+        {
+            foreach (var user in users)
+            {
+                if (user.Email is not null && skipEmails.Contains(user.Email))
+                    continue;
+                if (!user.IsVerified || !user.IsActive)
+                    continue;
+
+                var live = await db.Subscriptions.AnyAsync(s =>
+                    s.UserId == user.Id
+                    && s.Status == SubscriptionStatus.Active
+                    && s.PeriodEnd > now
+                    && s.PlanCode == planCode);
+                if (live)
+                    continue;
+
+                db.Subscriptions.Add(new Subscription
+                {
+                    SubscriptionId = Guid.NewGuid(),
+                    UserId = user.Id,
+                    PlanCode = planCode,
+                    Status = SubscriptionStatus.Active,
+                    PeriodStart = now,
+                    PeriodEnd = periodEnd,
+                    Source = SubscriptionSource.AdminGrant,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+            }
+        }
+
+        var farms = await userManager.GetUsersInRoleAsync(AppRoles.Farm);
+        var factories = await userManager.GetUsersInRoleAsync(AppRoles.Factory);
+        await GrantProAsync(farms, SubscriptionPlanCodes.FarmPro);
+        await GrantProAsync(factories, SubscriptionPlanCodes.FactoryPro);
+        await db.SaveChangesAsync();
+    }
+
     // -------------------------------------------------------------------------
     // Report
     // -------------------------------------------------------------------------
@@ -554,7 +631,9 @@ public static partial class DevelopmentDataSeeder
                 "Factory capacity is encoded in IndustryType (no Capacity column).",
                 "ChromaDocuments reflects RagDocument rows; live Chroma ingest is best-effort.",
                 $"Password for all seed.* accounts: {SeedPassword}",
-                "Password for all demo.* accounts: Demo123@!"
+                "Password for all demo.* accounts: Demo123@!",
+                "Password for all wedge.* accounts: Demo123@!",
+                "[WEDGE] Tomato × Qalyubia farms/factories are demo density only — not real customers."
             ]
         };
     }

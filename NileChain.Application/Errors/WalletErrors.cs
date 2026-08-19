@@ -40,9 +40,25 @@ public static class WalletErrors
     public static readonly Error WithdrawFailed =
         new("Wallet.WithdrawFailed", "Withdrawal could not be completed.");
 
+    public static readonly Error WithdrawalNotFound =
+        new("Wallet.WithdrawalNotFound", "Withdrawal was not found.");
+
+    public static readonly Error WithdrawalInvalidState =
+        new("Wallet.WithdrawalInvalidState", "Withdrawal is not pending.");
+
     public static readonly Error Conflict =
         new("Wallet.Conflict", "Wallet changed concurrently — refresh and try again.");
 
     public static readonly Error Forbidden =
         new("Wallet.Forbidden", "You are not allowed to access this wallet.");
+
+    public static readonly Error SubscriptionFarmNotApplicable =
+        new(
+            "Wallet.SubscriptionFarmNotApplicable",
+            "The monthly NileChain plan is billed to factories. Farm accounts do not subscribe.");
+
+    public static readonly Error SubscriptionInsufficient =
+        new(
+            "Wallet.SubscriptionInsufficient",
+            "Available wallet balance is too low to pay this month's Pro plan. Top up the NileChain wallet, then try again.");
 }

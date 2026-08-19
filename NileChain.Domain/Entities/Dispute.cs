@@ -28,6 +28,8 @@ public class Dispute
     public Guid? ResolvedByUserId { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    /// <summary>Admin SLA clock. Does not auto-resolve.</summary>
+    public DateTime? SlaDueAt { get; set; }
     public DateTime? UnderReviewAt { get; set; }
     public DateTime? ResolvedAt { get; set; }
     public DateTime? RejectedAt { get; set; }

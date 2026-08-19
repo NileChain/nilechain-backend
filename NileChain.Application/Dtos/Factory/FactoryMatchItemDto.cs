@@ -22,6 +22,10 @@ public class FactoryMatchItemDto
     public Guid? ContractId { get; set; }
     public bool ContractFullySigned { get; set; }
     public bool CanMessage { get; set; }
+    public bool IsGeographicExpansion { get; set; }
+    /// <summary>Deterministic score breakdown — no model call, no free text.</summary>
+    public List<MatchFactorDto> WhyMatched { get; set; } = new();
+    public List<MatchNegotiationRoundDto> NegotiationRounds { get; set; } = new();
 
     public decimal? RequestQuantityTons { get; set; }
     public decimal? RequestPricePerTon { get; set; }

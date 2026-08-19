@@ -5,6 +5,7 @@ using NileChain.AI.Plugins;
 using NileChain.AI.RAG;
 using NileChain.AI.Services;
 using NileChain.AI.Sbg;
+using NileChain.AI.Telemetry;
 using NileChain.AI.Weather;
 using NileChain.Application.Interfaces;
 using NileChain.Domain.Interfaces;
@@ -18,6 +19,10 @@ public static class DependencyInjection
         IConfiguration configuration)
     {
         services.Configure<SbgOptions>(configuration.GetSection(SbgOptions.SectionName));
+
+        // Rates never change at runtime; usage is per-request so an agent run can report its own cost.
+        services.AddSingleton(new LlmPricing(configuration));
+        services.AddScoped<LlmUsageLedger>();
 
         // Overlay env / OpenAI key into Sbg options for local .env workflows.
         services.PostConfigure<SbgOptions>(opts =>
@@ -51,7 +56,8 @@ public static class DependencyInjection
                 out var unavailableReason,
                 out var supportsNativeToolCalling,
                 out var providerName,
-                sbg);
+                sbg,
+                sp.GetRequiredService<LlmUsageLedger>());
 
             return kernel is null
                 ? new OpenAiKernelProvider(
@@ -82,6 +88,7 @@ public static class DependencyInjection
         services.AddScoped<MatchingAgent>();
         services.AddScoped<RiskAgent>();
         services.AddScoped<ContractAgent>();
+        services.AddScoped<IKybVerificationAgent, KybVerificationAgent>();
         // Lazy so matching (/agent/run) does not resolve ContractAgent.
         services.AddScoped(sp =>
             new Lazy<ContractAgent>(() => sp.GetRequiredService<ContractAgent>()));

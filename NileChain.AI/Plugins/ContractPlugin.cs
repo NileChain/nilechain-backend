@@ -5,6 +5,69 @@ namespace NileChain.AI.Plugins;
 
 public class ContractPlugin
 {
+    /// <summary>
+    /// Asks for clause prose as JSON, keyed by article, with the agreed figures given only as
+    /// read-only context. The composer supplies every number, so the model is told to write none:
+    /// a digit in the answer gets that clause dropped rather than silently shipped.
+    /// </summary>
+    [KernelFunction("build_structured_contract_prompt")]
+    [Description("Builds a JSON-schema prompt for contract clause prose; all numbers stay with the platform")]
+    public string BuildStructuredClausePrompt(
+        [Description("Farm name")] string farmName,
+        [Description("Factory name")] string factoryName,
+        [Description("Crop type")] string cropType,
+        [Description("Quantity in tons")] decimal quantityTons,
+        [Description("Price per ton in EGP")] decimal pricePerTon,
+        [Description("Delivery date")] string deliveryDate,
+        [Description("Quality specifications")] string qualitySpecs,
+        [Description("RAG context from knowledge base")] string ragContext,
+        [Description("Delivery point Arabic label")] string deliveryPointArabic = "باب المصنع",
+        [Description("Who pays freight Arabic")] string freightPayerArabic = "المزرعة",
+        [Description("Who bears transit risk Arabic")] string transitRiskArabic = "المزرعة")
+    {
+        return $$"""
+            أنت مستشار قانوني متخصص في عقود التوريد الزراعية وفق القانون المصري.
+            مهمتك: صياغة نصوص البنود القانونية فقط، ثم إعادتها في كائن JSON واحد.
+
+            سياق الصفقة (للاسترشاد فقط — المنصة هي التي تكتب الأرقام في العقد، فلا تكتبها أنت):
+            - المشتري (المصنع): {{factoryName}}
+            - المورد (المزرعة): {{farmName}}
+            - المحصول: {{cropType}}
+            - الكمية: {{quantityTons}} طن متري
+            - سعر الطن: {{pricePerTon}} جنيه مصري
+            - تاريخ التسليم الأقصى: {{deliveryDate}}
+            - نقطة التسليم: {{deliveryPointArabic}}
+            - أجرة النقل يتحملها: {{freightPayerArabic}}
+            - مخاطر التلف أثناء النقل يتحملها: {{transitRiskArabic}}
+            - مواصفات الجودة: {{qualitySpecs}}
+
+            مرجع جودة من قاعدة المعرفة (استعن به في الصياغة القانونية فقط):
+            {{ragContext}}
+
+            أعد كائن JSON واحداً بهذه المفاتيح حصراً، وقيمة كل مفتاح نص عربي واحد:
+            {
+              "subject": "أحكام موضوع العقد والتزام التوريد والقبول",
+              "quantitySpecs": "أحكام مطابقة الكمية والمواصفات وحق الفحص والرفض",
+              "priceTerms": "أحكام السداد وإثبات الدفع عبر المنصة",
+              "deliveryRisk": "أحكام التسليم والنقل وتبعة الهلاك ورفض الحمولة",
+              "obligations": "التزامات كل من المورد والمشتري",
+              "penalties": "أحكام الإخلال والتعويض",
+              "forceMajeure": "أحكام القوة القاهرة والإخطار",
+              "disputes": "القانون الواجب التطبيق والمحكمة المختصة",
+              "general": "أحكام عامة، ومنها إلزامية التوقيع الإلكتروني عبر منصة NileChain"
+            }
+
+            قواعد إلزامية (الإخلال بها يُلغي البند المعني):
+            - ممنوع تماماً كتابة أي رقم أو نسبة أو تاريخ بأي صورة (لا أرقام عربية ولا هندية).
+            - ممنوع الأقواس المربعة أو المعقوفة أو أي فراغ يُملأ لاحقاً.
+            - ممنوع خانات التوقيع الخطي أو ذكر الشهود أو التوقيع الورقي.
+            - لا تخترع أطرافاً أو أسماءً من قاعدة المعرفة أو من سياق سابق.
+            - لا تعد الأرقام أو الجداول؛ المنصة تُدرجها في مواضعها.
+            - كل بند بين أربعين ومئتي كلمة تقريباً، بصياغة قانونية مهنية بدون حشو.
+            - أخرج JSON فقط، بلا أي شرح قبله أو بعده.
+            """;
+    }
+
     [KernelFunction("build_contract_prompt")]
     [Description("Builds the prompt for contract generation using deal details and RAG context")]
     public string BuildContractPrompt(

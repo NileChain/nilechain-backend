@@ -5,6 +5,7 @@ using NileChain.Application.Common;
 using NileChain.Application.Dtos.Payment;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
 using NileChain.Application.Options;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
@@ -30,6 +31,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
     private readonly MockPaymentOptions _paymentOptions;
     private readonly ILogger<PaymentMilestoneService> _logger;
     private readonly ICloudinaryService _cloudinary;
+    private readonly IOutboundChannel? _outbound;
 
     public PaymentMilestoneService(
         IPaymentMilestoneRepository milestones,
@@ -43,7 +45,8 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         IOptions<PaymentMilestoneOptions> options,
         IOptions<MockPaymentOptions> paymentOptions,
         ILogger<PaymentMilestoneService> logger,
-        ICloudinaryService cloudinary)
+        ICloudinaryService cloudinary,
+        IOutboundChannel? outbound = null)
     {
         _milestones = milestones;
         _escrows = escrows;
@@ -57,6 +60,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         _paymentOptions = paymentOptions.Value;
         _logger = logger;
         _cloudinary = cloudinary;
+        _outbound = outbound;
     }
 
     public async Task<Result<PaymentMilestoneScheduleDto>> GetByContractAsync(
@@ -98,6 +102,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 ContractTotalUnavailableReason = totalOk ? null : reason,
                 Disclaimer = ResolveDisclaimer(),
                 MockGatewayEnabled = _paymentOptions.MockGatewayEnabled,
+                GatewayEnabled = _paymentOptions.GatewayEnabled,
                 WalletEnabled = _paymentOptions.WalletEnabled,
                 PlatformFeePercent = ResolveFeePercent(),
                 FarmPayoutDetails = payout,
@@ -130,6 +135,9 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
         Guid transactionId,
         Microsoft.AspNetCore.Http.IFormFile? receipt = null)
     {
+        if (_paymentOptions.GatewayEnabled)
+            return Task.FromResult(Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.OfflineMarkPaidConflict));
+
         if (_paymentOptions.MockGatewayEnabled)
             return Task.FromResult(Result<PaymentMilestoneScheduleDto>.Failure(MockEscrowErrors.UseMockPay));
 
@@ -295,6 +303,18 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
                 rows.Count,
                 contractId,
                 contractTotal);
+
+            if (_outbound is not null)
+            {
+                var farmUserId = contract.FarmMatch?.Farm?.UserId;
+                await _outbound.EnqueueWhatsAppAsync(
+                    farmUserId,
+                    null,
+                    ChannelTemplates.PaymentDue,
+                    "Payment milestones are open on a signed NileChain contract.",
+                    NotificationRelations.Contract,
+                    contractId);
+            }
         }
         catch (DbUpdateException ex) when (UniqueConstraintViolation.IsViolation(ex))
         {
@@ -495,6 +515,8 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             Title = title,
             Message = message,
             Type = type,
+            RelatedEntityType = NotificationRelations.Contract,
+            RelatedEntityId = contract.ContractId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         });
@@ -586,11 +608,13 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
     }
 
     private string ResolveDisclaimer() =>
-        !_paymentOptions.MockGatewayEnabled
-            ? StatusTrackingDisclaimer
-            : _paymentOptions.WalletEnabled
-                ? MockEscrowPaymentService.WalletDisclaimer
-                : MockEscrowPaymentService.MockDisclaimer;
+        _paymentOptions.GatewayEnabled
+            ? MockEscrowPaymentService.PaymobDisclaimer
+            : !_paymentOptions.MockGatewayEnabled
+                ? StatusTrackingDisclaimer
+                : _paymentOptions.WalletEnabled
+                    ? MockEscrowPaymentService.WalletDisclaimer
+                    : MockEscrowPaymentService.MockDisclaimer;
 
     private decimal ResolveFeePercent()
     {
@@ -620,6 +644,7 @@ public sealed class PaymentMilestoneService : IPaymentMilestoneService
             ContractTotalUnavailableReason = unavailableReason,
             Disclaimer = ResolveDisclaimer(),
             MockGatewayEnabled = _paymentOptions.MockGatewayEnabled,
+            GatewayEnabled = _paymentOptions.GatewayEnabled,
             WalletEnabled = _paymentOptions.WalletEnabled,
             PlatformFeePercent = ResolveFeePercent(),
             FarmPayoutDetails = payout,

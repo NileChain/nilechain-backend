@@ -39,7 +39,19 @@ public static class FactoryErrors
     public static readonly Error ConversationNotFound = new("Factory.ConversationNotFound", "Conversation not found.");
     public static readonly Error CannotSendMessage = new(
         "Factory.CannotSendMessage",
-        "Messaging is available only after both parties have signed the contract.");
+        "Messaging is available once a match is proposed (until it is excluded or rejected).");
+
+    public static readonly Error NegotiationRoundLimit = new(
+        "Factory.NegotiationRoundLimit",
+        "This match has reached the maximum number of negotiation rounds.");
+
+    public static readonly Error InvalidGeoScope = new(
+        "Factory.InvalidGeoScope",
+        "Geographic scope must be Exact, Nearby, or Nationwide.");
+
+    public static readonly Error ExpansionAlreadyApproved = new(
+        "Factory.ExpansionAlreadyApproved",
+        "One-ring geographic expansion is already approved for this request.");
     public static readonly Error NotificationNotFound = new("Factory.NotificationNotFound", "Notification not found.");
     public static readonly Error InvalidAction = new("Factory.InvalidAction", "Invalid action.");
     public static readonly Error ConcurrencyConflict = new(

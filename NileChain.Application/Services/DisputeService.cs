@@ -3,6 +3,9 @@ using NileChain.Application.Common;
 using NileChain.Application.Dtos.Dispute;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
+using NileChain.Application.Options;
+using Microsoft.Extensions.Options;
 using NileChain.Application.Validation;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
@@ -22,6 +25,7 @@ public sealed class DisputeService : IDisputeService
     private readonly ICloudinaryService _cloudinary;
     private readonly IMockEscrowPaymentService _escrowPayments;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly int _slaHours;
 
     public DisputeService(
         IDisputeRepository disputes,
@@ -30,7 +34,8 @@ public sealed class DisputeService : IDisputeService
         IRepository<Notification> notifications,
         ICloudinaryService cloudinary,
         IMockEscrowPaymentService escrowPayments,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        IOptions<DisputeOptions>? disputeOptions = null)
     {
         _disputes = disputes;
         _farms = farms;
@@ -39,6 +44,8 @@ public sealed class DisputeService : IDisputeService
         _cloudinary = cloudinary;
         _escrowPayments = escrowPayments;
         _unitOfWork = unitOfWork;
+        var hours = disputeOptions?.Value.SlaHours ?? DisputeSla.DefaultHours;
+        _slaHours = hours > 0 ? hours : DisputeSla.DefaultHours;
     }
 
     public Task<bool> HasActiveDisputeAsync(Guid contractId) =>
@@ -100,7 +107,8 @@ public sealed class DisputeService : IDisputeService
             Description = description.Trim(),
             RaisedByParty = asFarm ? DisputeParty.Farm : DisputeParty.Factory,
             RaisedByUserId = userId,
-            CreatedAt = now
+            CreatedAt = now,
+            SlaDueAt = DisputeSla.DueAt(now, _slaHours)
         };
 
         var openEvent = new DisputeEvent
@@ -138,7 +146,9 @@ public sealed class DisputeService : IDisputeService
             userId,
             "Dispute opened",
             $"A dispute ({disputeType}) was opened on your supply contract and is awaiting admin review.",
-            "DisputeOpened");
+            "DisputeOpened",
+            NotificationRelations.Dispute,
+            dispute.DisputeId);
 
         try
         {
@@ -216,7 +226,10 @@ public sealed class DisputeService : IDisputeService
             Page = page,
             PageSize = pageSize,
             TotalCount = total,
-            Items = items.Select(Map).ToList()
+            Items = items.Select(Map)
+                .OrderByDescending(d => d.IsOverdue)
+                .ThenBy(d => d.SlaDueAt ?? DateTime.MaxValue)
+                .ToList()
         });
     }
 
@@ -404,7 +417,14 @@ public sealed class DisputeService : IDisputeService
                 $"Dispute status is now {to}.")
         };
 
-        await NotifyBothPartiesAsync(dispute.Contract, adminUserId, title, message, type);
+        await NotifyBothPartiesAsync(
+            dispute.Contract,
+            adminUserId,
+            title,
+            message,
+            type,
+            NotificationRelations.Dispute,
+            dispute.DisputeId);
         await _unitOfWork.SaveChangesAsync();
         await tx.CommitAsync();
 
@@ -451,7 +471,9 @@ public sealed class DisputeService : IDisputeService
         Guid actorUserId,
         string title,
         string message,
-        string type)
+        string type,
+        string relatedEntityType,
+        Guid relatedEntityId)
     {
         var farmUserId = contract.FarmMatch?.Farm?.UserId;
         var factoryUserId = contract.FarmMatch?.SupplyRequest?.Factory?.UserId;
@@ -468,6 +490,8 @@ public sealed class DisputeService : IDisputeService
                 Title = title,
                 Message = message,
                 Type = type,
+                RelatedEntityType = relatedEntityType,
+                RelatedEntityId = relatedEntityId,
                 IsRead = false,
                 CreatedAt = DateTime.UtcNow
             });
@@ -504,6 +528,8 @@ public sealed class DisputeService : IDisputeService
         AdminNote = d.AdminNote,
         OutcomeFavor = d.OutcomeFavor.ToString(),
         CreatedAt = d.CreatedAt,
+        SlaDueAt = d.SlaDueAt ?? DisputeSla.DueAt(d.CreatedAt, DisputeSla.DefaultHours),
+        IsOverdue = DisputeSla.IsOverdue(d, DateTime.UtcNow),
         UnderReviewAt = d.UnderReviewAt,
         ResolvedAt = d.ResolvedAt,
         RejectedAt = d.RejectedAt,

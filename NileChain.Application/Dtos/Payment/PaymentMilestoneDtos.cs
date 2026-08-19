@@ -14,6 +14,9 @@ public class PaymentMilestoneScheduleDto
     /// <summary>When true, factory should use Pay (Demo); offline mark-paid is rejected.</summary>
     public bool MockGatewayEnabled { get; set; }
 
+    /// <summary>When true, factory pays the milestone via Paymob (sandbox); webhook is paid truth.</summary>
+    public bool GatewayEnabled { get; set; }
+
     /// <summary>When true, pay debits platform wallet (top-up via Paymob).</summary>
     public bool WalletEnabled { get; set; }
 

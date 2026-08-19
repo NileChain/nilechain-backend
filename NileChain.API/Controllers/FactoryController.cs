@@ -1,6 +1,8 @@
 using NileChain.API.Extensions;
 using NileChain.Application.Dtos.Contracts;
 using NileChain.Application.Dtos.Factory;
+using NileChain.Application.Dtos.Farm;
+using NileChain.Application.Dtos.Signing;
 using NileChain.Application.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -22,6 +24,7 @@ public class FactoryController : ControllerBase
     private readonly IContractAttachmentService _attachmentService;
     private readonly IContractDateAmendmentService _dateAmendmentService;
     private readonly IContractChangeRequestService _changeRequestService;
+    private readonly ISigningOtpService _signingOtp;
 
     public FactoryController(
         IFactoryService factoryService,
@@ -31,7 +34,8 @@ public class FactoryController : ControllerBase
         IDisputeService disputeService,
         IContractAttachmentService attachmentService,
         IContractDateAmendmentService dateAmendmentService,
-        IContractChangeRequestService changeRequestService)
+        IContractChangeRequestService changeRequestService,
+        ISigningOtpService signingOtp)
     {
         _factoryService = factoryService;
         _fulfillmentService = fulfillmentService;
@@ -41,6 +45,7 @@ public class FactoryController : ControllerBase
         _attachmentService = attachmentService;
         _dateAmendmentService = dateAmendmentService;
         _changeRequestService = changeRequestService;
+        _signingOtp = signingOtp;
     }
 
     [HttpGet("profile")]
@@ -62,6 +67,44 @@ public class FactoryController : ControllerBase
             return Unauthorized();
 
         var result = await _factoryService.UpdateProfileAsync(Guid.Parse(userId), request);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
+    }
+
+    [HttpGet("documents")]
+    public async Task<IActionResult> GetDocuments()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.GetDocumentsAsync(Guid.Parse(userId));
+        return result.ToActionResult();
+    }
+
+    [HttpPost("documents")]
+    public async Task<IActionResult> AddDocument(
+        IFormFile file,
+        [FromForm] string? kybKind)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.AddDocumentAsync(
+            Guid.Parse(userId),
+            file,
+            kybKind);
+        return result.ToActionResult();
+    }
+
+    [HttpDelete("documents/{documentId:guid}")]
+    public async Task<IActionResult> DeleteDocument(Guid documentId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.DeleteDocumentAsync(Guid.Parse(userId), documentId);
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
@@ -131,6 +174,42 @@ public class FactoryController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpPut("requests/{requestId:guid}/geo-scope")]
+    public async Task<IActionResult> UpdateRequestGeoScope(
+        Guid requestId,
+        [FromBody] UpdateSupplyRequestGeoScopeRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.UpdateRequestGeoScopeAsync(
+            Guid.Parse(userId), requestId, request);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("requests/{requestId:guid}/expand-geo")]
+    public async Task<IActionResult> ExpandGeo(Guid requestId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.ExpandGeoAsync(Guid.Parse(userId), requestId);
+        return result.ToActionResult();
+    }
+
+    [HttpPost("requests/{requestId:guid}/show-more")]
+    public async Task<IActionResult> ShowMoreMatches(Guid requestId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.ShowMoreMatchesAsync(Guid.Parse(userId), requestId);
+        return result.ToActionResult();
+    }
+
     [HttpPost("requests/{requestId:guid}/cancel")]
     public async Task<IActionResult> CancelRequest(Guid requestId)
     {
@@ -194,6 +273,17 @@ public class FactoryController : ControllerBase
             return Unauthorized();
 
         var result = await _factoryService.RejectCounterOfferAsync(Guid.Parse(userId), matchId);
+        return result.IsSuccess ? NoContent() : result.ToActionResult();
+    }
+
+    [HttpPost("matches/{matchId:guid}/counter-offer")]
+    public async Task<IActionResult> CounterOffer(Guid matchId, [FromBody] CounterOfferRequest request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.CounterOfferAsync(Guid.Parse(userId), matchId, request);
         return result.IsSuccess ? NoContent() : result.ToActionResult();
     }
 
@@ -438,6 +528,18 @@ public class FactoryController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpPost("contracts/{contractId:guid}/payments/paymob/{escrowId:guid}/complete-simulator")]
+    public async Task<IActionResult> CompletePaymobSimulator(Guid contractId, Guid escrowId)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _mockEscrowPaymentService.CompleteSimulatorAsync(
+            Guid.Parse(userId), contractId, escrowId);
+        return result.ToActionResult();
+    }
+
     [HttpPost("contracts/{contractId:guid}/escrow/{escrowId:guid}/confirm-release")]
     public async Task<IActionResult> ConfirmEscrowRelease(Guid contractId, Guid escrowId)
     {
@@ -522,14 +624,36 @@ public class FactoryController : ControllerBase
         return result.ToActionResult();
     }
 
-    [HttpPut("contracts/{contractId:guid}/approve")]
-    public async Task<IActionResult> ApproveContract(Guid contractId)
+    [HttpPost("contracts/{contractId:guid}/signing-otp")]
+    public async Task<IActionResult> RequestSigningOtp(Guid contractId)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (userId is null)
             return Unauthorized();
 
-        var result = await _factoryService.ApproveContractAsync(Guid.Parse(userId), contractId);
+        var result = await _signingOtp.SendOtpAsync(
+            contractId,
+            Guid.Parse(userId),
+            HttpContext.ClientIp());
+        return result.ToActionResult();
+    }
+
+    [HttpPut("contracts/{contractId:guid}/approve")]
+    public async Task<IActionResult> ApproveContract(
+        Guid contractId,
+        [FromBody] ApproveContractRequest? request)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (userId is null)
+            return Unauthorized();
+
+        var result = await _factoryService.ApproveContractAsync(
+            Guid.Parse(userId),
+            contractId,
+            request?.OtpCode,
+            HttpContext.ClientIp(),
+            HttpContext.ClientUserAgent(),
+            request?.ConsentText);
         return result.ToActionResult();
     }
 

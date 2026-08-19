@@ -11,7 +11,15 @@ public class WalletDto
     public bool PaymobConfigured { get; set; }
     public bool SimulatorAvailable { get; set; }
     public decimal PlatformFeePercent { get; set; }
+    public string FeePayer { get; set; } = "Factory";
+    public string FeeBase { get; set; } = "ReleasedAfterQc";
     public string Disclaimer { get; set; } = string.Empty;
+    /// <summary>True for factory and farm wallets billed on a monthly Pro plan.</summary>
+    public bool SubscriptionApplies { get; set; }
+    public bool SubscriptionActive { get; set; }
+    public decimal SubscriptionMonthlyUsd { get; set; }
+    public decimal SubscriptionMonthlyEgp { get; set; }
+    public DateTime? SubscriptionPaidThroughUtc { get; set; }
     public List<WalletLedgerItemDto> RecentLedger { get; set; } = new();
     public List<WalletWithdrawalDto> RecentWithdrawals { get; set; } = new();
 }

@@ -1,15 +1,20 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using NileChain.Application.Admin;
 using NileChain.Application.Auth;
 using NileChain.Application.Dtos.Admin;
 using NileChain.Application.Common;
+using NileChain.Application.Dtos.Email;
+using NileChain.Application.Email;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
 using NileChain.Domain.Common;
+using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
 using NileChain.Domain.Identity;
 using NileChain.Domain.Interfaces;
+using System.Text.Json;
 
 namespace NileChain.Application.Services
 {
@@ -20,10 +25,18 @@ namespace NileChain.Application.Services
         private readonly IFarmRepository _farmRepository;
         private readonly IFactoryRepository _factoryRepository;
         private readonly IRepository<NileChain.Domain.Entities.RagDocument> _ragDocumentRepository;
+        private readonly IRepository<NileChain.Domain.Entities.Certification> _certificationRepository;
         private readonly IRefreshTokenRepository _refreshTokenRepository;
         private readonly IAdminAnalyticsRepository _analytics;
         private readonly IUnitOfWork _unitOfWork;
         private readonly IRagIndexer? _ragIndexer;
+        private readonly IKybVerificationAgent? _kybVerificationAgent;
+        private readonly IEmailService? _emailService;
+        private readonly ITemplateRenderer? _templateRenderer;
+        private readonly IUserAccountDeletionService _userAccountDeletionService;
+        private readonly IRepository<KybDecision>? _kybDecisions;
+        private readonly ISubscriptionRepository? _subscriptions;
+        private readonly AppOptions _appOptions;
 
         public AdminService(
             UserManager<ApplicationUser> userManager,
@@ -31,20 +44,36 @@ namespace NileChain.Application.Services
             IFarmRepository farmRepository,
             IFactoryRepository factoryRepository,
             IRepository<NileChain.Domain.Entities.RagDocument> ragDocumentRepository,
+            IRepository<NileChain.Domain.Entities.Certification> certificationRepository,
             IRefreshTokenRepository refreshTokenRepository,
             IAdminAnalyticsRepository analytics,
             IUnitOfWork unitOfWork,
-            IRagIndexer? ragIndexer = null)
+            IUserAccountDeletionService userAccountDeletionService,
+            IRagIndexer? ragIndexer = null,
+            IKybVerificationAgent? kybVerificationAgent = null,
+            IEmailService? emailService = null,
+            ITemplateRenderer? templateRenderer = null,
+            IOptions<AppOptions>? appOptions = null,
+            IRepository<KybDecision>? kybDecisions = null,
+            ISubscriptionRepository? subscriptions = null)
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _farmRepository = farmRepository;
             _factoryRepository = factoryRepository;
             _ragDocumentRepository = ragDocumentRepository;
+            _certificationRepository = certificationRepository;
             _refreshTokenRepository = refreshTokenRepository;
             _analytics = analytics;
             _unitOfWork = unitOfWork;
+            _userAccountDeletionService = userAccountDeletionService;
             _ragIndexer = ragIndexer;
+            _kybVerificationAgent = kybVerificationAgent;
+            _emailService = emailService;
+            _templateRenderer = templateRenderer;
+            _kybDecisions = kybDecisions;
+            _subscriptions = subscriptions;
+            _appOptions = appOptions?.Value ?? new AppOptions();
         }
 
         public async Task<PagedResult<UserListItem>> GetUsersAsync(string? role, bool? isVerified, string? search, int page, int pageSize)
@@ -58,9 +87,14 @@ namespace NileChain.Application.Services
                 query = query.Where(u => userIds.Contains(u.Id));
             }
 
-            if (isVerified.HasValue)
+            if (isVerified == true)
             {
-                query = query.Where(u => u.IsVerified == isVerified.Value);
+                query = query.Where(u => u.IsVerified);
+            }
+            else if (isVerified == false)
+            {
+                query = query.Where(u =>
+                    !u.IsVerified && u.KybReviewStatus != KybReviewStatus.Rejected);
             }
 
             if (!string.IsNullOrWhiteSpace(search))
@@ -82,25 +116,20 @@ namespace NileChain.Application.Services
                 .ToListAsync();
 
             var items = new List<UserListItem>();
+            var latestReports = await _analytics.GetLatestKybReportsAsync(users.Select(u => u.Id).ToList());
+            var latestPlans = _subscriptions is null
+                ? new Dictionary<Guid, Subscription>()
+                : await _subscriptions.GetLatestForUsersAsync(users.Select(u => u.Id).ToList());
+            var now = DateTime.UtcNow;
             foreach (var user in users)
             {
                 var roles = await _userManager.GetRolesAsync(user);
                 var roleName = roles.FirstOrDefault() ?? "User";
                 var isBlocked = user.LockoutEnabled && user.LockoutEnd.HasValue && user.LockoutEnd > DateTimeOffset.UtcNow;
+                latestReports.TryGetValue(user.Id, out var lastReport);
+                latestPlans.TryGetValue(user.Id, out var plan);
 
-                items.Add(new UserListItem
-                {
-                    Id = user.Id,
-                    Email = user.Email ?? "",
-                    DisplayName = user.Farm?.Name ?? user.Factory?.Name ?? user.UserName,
-                    Role = roleName,
-                    IsVerified = user.IsVerified,
-                    IsBlocked = isBlocked,
-                    IsActive = user.IsActive,
-                    CreatedAt = user.CreatedAt,
-                    FarmName = user.Farm?.Name,
-                    FactoryName = user.Factory?.Name
-                });
+                items.Add(MapUserListItem(user, roleName, isBlocked, lastReport, plan, now));
             }
 
             return new PagedResult<UserListItem>
@@ -129,7 +158,8 @@ namespace NileChain.Application.Services
                 UserName = request.Email,
                 Email = request.Email,
                 CreatedAt = DateTime.UtcNow,
-                IsVerified = role == "Admin"
+                IsVerified = role == "Admin",
+                KybReviewStatus = role == "Admin" ? KybReviewStatus.Approved : KybReviewStatus.Pending
             };
 
             var createResult = await _userManager.CreateAsync(user, request.Password);
@@ -175,7 +205,8 @@ namespace NileChain.Application.Services
                 IsBlocked = false,
                 CreatedAt = user.CreatedAt,
                 FarmName = role == "Farm" ? request.Name : null,
-                FactoryName = role == "Factory" ? request.Name : null
+                FactoryName = role == "Factory" ? request.Name : null,
+                KybReviewStatus = user.KybReviewStatus.ToString()
             };
         }
 
@@ -315,13 +346,80 @@ namespace NileChain.Application.Services
                 Role = finalRoles.FirstOrDefault() ?? currentRole,
                 IsVerified = user.IsVerified,
                 IsBlocked = isBlocked,
-                CreatedAt = user.CreatedAt,
-                FarmName = farmEnt?.Name,
-                FactoryName = factoryEnt?.Name
+                    CreatedAt = user.CreatedAt,
+                    FarmId = farmEnt?.FarmId,
+                    FarmName = farmEnt?.Name,
+                FactoryId = factoryEnt?.FactoryId,
+                FactoryName = factoryEnt?.Name,
+                KybReviewStatus = user.KybReviewStatus.ToString(),
+                KybAdminNote = user.KybAdminNote
             };
         }
 
-        public async Task<Result> VerifyUserAsync(Guid userId)
+        public Task<Result<VerifyUserResult>> VerifyUserAsync(Guid userId) =>
+            AnalyzeKybAsync(userId);
+
+        public async Task<Result<VerifyUserResult>> AnalyzeKybAsync(Guid userId)
+        {
+            var user = await _userManager.FindByIdAsync(userId.ToString());
+            if (user is null)
+                return Result<VerifyUserResult>.Failure(AdminErrors.UserNotFound);
+
+            var roles = await _userManager.GetRolesAsync(user);
+
+            if (roles.Contains("Farm"))
+            {
+                if (_kybVerificationAgent is null)
+                    return Result<VerifyUserResult>.Failure(new Error(
+                        "Admin.KybAgentMissing",
+                        "KYB verification agent is not configured."));
+
+                var farm = await _farmRepository.GetFarmWithDetailsAsync(userId)
+                    ?? await _farmRepository.GetByUserIdAsync(userId);
+
+                if (farm is null)
+                    return Result<VerifyUserResult>.Failure(new Error(
+                        "Admin.FarmNotFound",
+                        "Farm profile for this user was not found."));
+
+                return await _kybVerificationAgent.VerifyFarmAsync(userId, farm);
+            }
+
+            if (roles.Contains("Factory"))
+            {
+                if (_kybVerificationAgent is null)
+                    return Result<VerifyUserResult>.Failure(new Error(
+                        "Admin.KybAgentMissing",
+                        "KYB verification agent is not configured."));
+
+                var factory = await _factoryRepository.GetFactoryWithDetailsAsync(userId)
+                    ?? await _factoryRepository.GetByUserIdAsync(userId);
+
+                if (factory is null)
+                    return Result<VerifyUserResult>.Failure(new Error(
+                        "Admin.FactoryNotFound",
+                        "Factory profile for this user was not found."));
+
+                return await _kybVerificationAgent.VerifyFactoryAsync(userId, factory);
+            }
+
+            return Result<VerifyUserResult>.Failure(AdminErrors.KybUnsupportedRole);
+        }
+
+        public async Task<Result<VerifyUserResult>> GetLastKybReportAsync(Guid userId)
+        {
+            var user = await _userManager.FindByIdAsync(userId.ToString());
+            if (user is null)
+                return Result<VerifyUserResult>.Failure(AdminErrors.UserNotFound);
+
+            var row = await _analytics.GetLatestKybReportAsync(userId);
+            if (row is null)
+                return Result<VerifyUserResult>.Failure(AdminErrors.KybReportNotFound);
+
+            return Result<VerifyUserResult>.Success(MapReport(row));
+        }
+
+        public async Task<Result> ApproveUserAsync(Guid adminUserId, Guid userId, string? reason)
         {
             var user = await _userManager.FindByIdAsync(userId.ToString());
             if (user is null)
@@ -330,10 +428,18 @@ namespace NileChain.Application.Services
             if (user.IsVerified)
                 return Result.Failure(AdminErrors.UserAlreadyVerified);
 
-            user.IsVerified = true;
-            await _userManager.UpdateAsync(user);
+            var last = await _analytics.GetLatestKybReportAsync(userId);
+            var score = last?.TrustScore ?? 0;
+            if (score < 70 && string.IsNullOrWhiteSpace(reason))
+                return Result.Failure(AdminErrors.KybReasonRequired);
 
             var roles = await _userManager.GetRolesAsync(user);
+            user.IsVerified = true;
+            user.KybReviewStatus = KybReviewStatus.Approved;
+            user.KybAdminNote = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+            user.KybReviewedAt = DateTime.UtcNow;
+            user.KybReviewedByUserId = adminUserId;
+            await _userManager.UpdateAsync(user);
 
             if (roles.Contains("Farm"))
             {
@@ -342,7 +448,6 @@ namespace NileChain.Application.Services
                 {
                     farm.IsVerified = true;
                     _farmRepository.Update(farm);
-                    await _unitOfWork.SaveChangesAsync();
                 }
             }
             else if (roles.Contains("Factory"))
@@ -352,10 +457,261 @@ namespace NileChain.Application.Services
                 {
                     factory.IsVerified = true;
                     _factoryRepository.Update(factory);
-                    await _unitOfWork.SaveChangesAsync();
                 }
             }
 
+            await RecordDecisionAsync(userId, adminUserId, KybDecisionAction.Approved, reason ?? string.Empty, score);
+            await _unitOfWork.SaveChangesAsync();
+            await TrySendApprovalEmailAsync(user);
+            return Result.Success();
+        }
+
+        public async Task<Result> RequestKybInfoAsync(Guid adminUserId, Guid userId, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                return Result.Failure(AdminErrors.KybReasonRequired);
+
+            var user = await _userManager.FindByIdAsync(userId.ToString());
+            if (user is null)
+                return Result.Failure(AdminErrors.UserNotFound);
+
+            var note = reason.Trim();
+            var last = await _analytics.GetLatestKybReportAsync(userId);
+            user.IsVerified = false;
+            user.KybReviewStatus = KybReviewStatus.RequestInfo;
+            user.KybAdminNote = note;
+            user.KybReviewedAt = DateTime.UtcNow;
+            user.KybReviewedByUserId = adminUserId;
+            await _userManager.UpdateAsync(user);
+
+            await RecordDecisionAsync(userId, adminUserId, KybDecisionAction.RequestInfo, note, last?.TrustScore ?? 0);
+            await _unitOfWork.SaveChangesAsync();
+            await TrySendRequestInfoEmailAsync(user, note);
+            return Result.Success();
+        }
+
+        public async Task<Result> RejectUserAsync(Guid adminUserId, Guid userId, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                return Result.Failure(AdminErrors.KybReasonRequired);
+
+            var user = await _userManager.FindByIdAsync(userId.ToString());
+            if (user is null)
+                return Result.Failure(AdminErrors.UserNotFound);
+
+            var note = reason.Trim();
+            var last = await _analytics.GetLatestKybReportAsync(userId);
+            var roles = await _userManager.GetRolesAsync(user);
+
+            user.IsVerified = false;
+            user.KybReviewStatus = KybReviewStatus.Rejected;
+            user.KybAdminNote = note;
+            user.KybReviewedAt = DateTime.UtcNow;
+            user.KybReviewedByUserId = adminUserId;
+            var updated = await _userManager.UpdateAsync(user);
+            if (!updated.Succeeded)
+            {
+                return Result.Failure(AdminErrors.KybRejectFailed);
+            }
+
+            if (roles.Contains("Farm"))
+            {
+                var farm = await _farmRepository.GetByUserIdAsync(userId);
+                if (farm is not null)
+                {
+                    farm.IsVerified = false;
+                    _farmRepository.Update(farm);
+                }
+            }
+            else if (roles.Contains("Factory"))
+            {
+                var factory = await _factoryRepository.GetByUserIdAsync(userId);
+                if (factory is not null)
+                {
+                    factory.IsVerified = false;
+                    _factoryRepository.Update(factory);
+                }
+            }
+
+            try
+            {
+                await RecordDecisionAsync(userId, adminUserId, KybDecisionAction.Rejected, note, last?.TrustScore ?? 0);
+                await _unitOfWork.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"KYB reject audit failed: {ex.Message}");
+                try
+                {
+                    await _unitOfWork.SaveChangesAsync();
+                }
+                catch (Exception saveEx)
+                {
+                    Console.WriteLine($"KYB reject save failed: {saveEx.Message}");
+                }
+            }
+
+            await TrySendRejectionEmailAsync(user, note);
+            return Result.Success();
+        }
+
+        public async Task<Result<FarmHygieneDto>> GetFarmHygieneAsync(Guid farmId)
+        {
+            var farm = await _farmRepository.GetByIdAsync(farmId);
+            if (farm is null)
+                return Result<FarmHygieneDto>.Failure(FarmErrors.FarmNotFound);
+
+            var detailed = await _farmRepository.GetFarmWithDetailsAsync(farm.UserId) ?? farm;
+            var now = DateTime.UtcNow;
+            var missing = NileChain.Domain.Common.KybRequirements
+                .MissingRequiredKinds(
+                    (detailed.FarmDocuments ?? Array.Empty<FarmDocument>()).Select(d => d.KybKind),
+                    NileChain.Domain.Common.KybRequirements.RequiredForFarmVerifyWarning)
+                .Select(k => k.ToString())
+                .ToList();
+
+            return Result<FarmHygieneDto>.Success(new FarmHygieneDto
+            {
+                FarmId = farm.FarmId,
+                FarmName = farm.Name,
+                IsVerified = farm.IsVerified,
+                KybIncomplete = missing.Count > 0,
+                MissingKybKinds = missing,
+                Documents = (detailed.FarmDocuments ?? Array.Empty<FarmDocument>())
+                    .OrderByDescending(d => d.UploadedAt)
+                    .Select(d => new FarmHygieneDocumentDto
+                    {
+                        DocumentId = d.FarmDocumentId,
+                        FileName = d.FileName,
+                        FileUrl = d.FileUrl,
+                        KybKind = d.KybKind.ToString(),
+                        UploadedAt = d.UploadedAt
+                    })
+                    .ToList(),
+                Certifications = (detailed.FarmCertifications ?? Array.Empty<FarmCertification>())
+                    .Select(c => new FarmHygieneCertDto
+                    {
+                        CertificationId = c.CertificationId,
+                        Name = c.Certification?.Name ?? "Unknown",
+                        IssuedAt = c.IssuedAt,
+                        ExpiresAt = c.ExpiresAt,
+                        AdminGranted = c.GrantedByAdminUserId is not null && c.GrantedByAdminUserId != Guid.Empty,
+                        IsExpired = c.ExpiresAt is not null && c.ExpiresAt <= now
+                    })
+                    .ToList()
+            });
+        }
+
+        public async Task<Result<FactoryHygieneDto>> GetFactoryHygieneAsync(Guid factoryId)
+        {
+            var factory = await _factoryRepository.GetByIdAsync(factoryId);
+            if (factory is null)
+                return Result<FactoryHygieneDto>.Failure(FactoryErrors.FactoryNotFound);
+
+            var detailed = await _factoryRepository.GetFactoryWithDetailsAsync(factory.UserId) ?? factory;
+            var missing = NileChain.Domain.Common.KybRequirements
+                .MissingRequiredKinds(
+                    (detailed.FactoryDocuments ?? Array.Empty<FactoryDocument>()).Select(d => d.KybKind),
+                    NileChain.Domain.Common.KybRequirements.RequiredForFactoryVerify)
+                .Select(k => k.ToString())
+                .ToList();
+
+            return Result<FactoryHygieneDto>.Success(new FactoryHygieneDto
+            {
+                FactoryId = factory.FactoryId,
+                FactoryName = factory.Name,
+                IsVerified = factory.IsVerified,
+                KybIncomplete = missing.Count > 0,
+                MissingKybKinds = missing,
+                Documents = (detailed.FactoryDocuments ?? Array.Empty<FactoryDocument>())
+                    .OrderByDescending(d => d.UploadedAt)
+                    .Select(d => new FarmHygieneDocumentDto
+                    {
+                        DocumentId = d.FactoryDocumentId,
+                        FileName = d.FileName,
+                        FileUrl = d.FileUrl,
+                        KybKind = d.KybKind.ToString(),
+                        UploadedAt = d.UploadedAt
+                    })
+                    .ToList()
+            });
+        }
+
+        public async Task<Result<AdminOpsBadgesDto>> GetOpsBadgesAsync(CancellationToken cancellationToken = default)
+        {
+            var pendingVerifications = await _analytics.CountUnverifiedUsersAsync(cancellationToken);
+            var openDisputes = await _analytics.CountOpenDisputesAsync(cancellationToken);
+            var pendingWithdrawals = await _analytics.CountPendingWithdrawalsAsync(cancellationToken);
+            return Result<AdminOpsBadgesDto>.Success(new AdminOpsBadgesDto
+            {
+                PendingVerifications = pendingVerifications,
+                OpenDisputes = openDisputes,
+                PendingWithdrawals = pendingWithdrawals
+            });
+        }
+
+        public async Task<Result> GrantFarmCertificationAsync(
+            Guid adminUserId,
+            Guid farmId,
+            GrantFarmCertificationRequest request)
+        {
+            var farm = await _farmRepository.GetByIdAsync(farmId);
+            if (farm is null)
+                return Result.Failure(FarmErrors.FarmNotFound);
+
+            var detailed = await _farmRepository.GetFarmWithDetailsAsync(farm.UserId);
+            if (detailed is null)
+                return Result.Failure(FarmErrors.FarmNotFound);
+
+            var issuedAt = request.IssuedAt ?? DateTime.UtcNow;
+            if (request.ExpiresAt is not null && request.ExpiresAt <= issuedAt)
+                return Result.Failure(FarmErrors.InvalidCertificationDates);
+
+            var certification = await _certificationRepository.GetByIdAsync(request.CertificationId);
+            if (certification is null)
+                return Result.Failure(FarmErrors.CertificationNotFound);
+
+            var existing = detailed.FarmCertifications
+                .FirstOrDefault(c => c.CertificationId == request.CertificationId);
+            if (existing is not null)
+            {
+                existing.GrantedByAdminUserId = adminUserId;
+                existing.IssuedAt = issuedAt;
+                existing.ExpiresAt = request.ExpiresAt;
+            }
+            else
+            {
+                detailed.FarmCertifications.Add(new FarmCertification
+                {
+                    FarmId = detailed.FarmId,
+                    CertificationId = request.CertificationId,
+                    IssuedAt = issuedAt,
+                    ExpiresAt = request.ExpiresAt,
+                    GrantedByAdminUserId = adminUserId,
+                    Certification = certification
+                });
+            }
+
+            await _unitOfWork.SaveChangesAsync();
+            return Result.Success();
+        }
+
+        public async Task<Result> RevokeFarmCertificationAsync(Guid farmId, Guid certificationId)
+        {
+            var farm = await _farmRepository.GetByIdAsync(farmId);
+            if (farm is null)
+                return Result.Failure(FarmErrors.FarmNotFound);
+
+            var detailed = await _farmRepository.GetFarmWithDetailsAsync(farm.UserId);
+            if (detailed is null)
+                return Result.Failure(FarmErrors.FarmNotFound);
+
+            var link = detailed.FarmCertifications.FirstOrDefault(c => c.CertificationId == certificationId);
+            if (link is null)
+                return Result.Failure(FarmErrors.CertificationNotOnFarm);
+
+            detailed.FarmCertifications.Remove(link);
+            await _unitOfWork.SaveChangesAsync();
             return Result.Success();
         }
 
@@ -425,6 +781,198 @@ namespace NileChain.Application.Services
             await _userManager.UpdateAsync(user);
 
             return Result.Success();
+        }
+
+        public Task<Result> DeleteUserAsync(Guid userId) =>
+            _userAccountDeletionService.DeleteUserAccountAsync(userId);
+
+        private async Task TrySendApprovalEmailAsync(ApplicationUser user)
+        {
+            if (_emailService is null || _templateRenderer is null || string.IsNullOrWhiteSpace(user.Email))
+                return;
+
+            try
+            {
+                var html = await _templateRenderer.RenderAsync(
+                    EmailTemplates.KybApproved,
+                    new Dictionary<string, string>
+                    {
+                        ["UserName"] = user.UserName ?? user.Email!,
+                        ["LoginLink"] = $"{_appOptions.FrontendBaseUrl}/login"
+                    });
+
+                await _emailService.SendAsync(new EmailMessage
+                {
+                    To = user.Email!,
+                    Subject = "Your NileChain account has been approved",
+                    Body = html,
+                    IsHtml = true
+                });
+            }
+            catch
+            {
+                Console.WriteLine("Approval email failed");
+            }
+        }
+
+        private async Task TrySendRejectionEmailAsync(ApplicationUser user, string reason)
+        {
+            if (_emailService is null || _templateRenderer is null || string.IsNullOrWhiteSpace(user.Email))
+                return;
+
+            try
+            {
+                var html = await _templateRenderer.RenderAsync(
+                    EmailTemplates.KybRejected,
+                    new Dictionary<string, string>
+                    {
+                        ["UserName"] = user.UserName ?? user.Email!,
+                        ["SupportHint"] = reason
+                    });
+
+                await _emailService.SendAsync(new EmailMessage
+                {
+                    To = user.Email!,
+                    Subject = "Your NileChain registration was not approved",
+                    Body = html,
+                    IsHtml = true
+                });
+            }
+            catch
+            {
+                Console.WriteLine("Rejection email failed");
+            }
+        }
+
+        private async Task TrySendRequestInfoEmailAsync(ApplicationUser user, string note)
+        {
+            if (_emailService is null || _templateRenderer is null || string.IsNullOrWhiteSpace(user.Email))
+                return;
+
+            try
+            {
+                var profilePath = (await _userManager.GetRolesAsync(user)).Contains("Factory")
+                    ? "/factory/profile"
+                    : "/farm/profile";
+                var html = await _templateRenderer.RenderAsync(
+                    EmailTemplates.KybRequestInfo,
+                    new Dictionary<string, string>
+                    {
+                        ["UserName"] = user.UserName ?? user.Email!,
+                        ["AdminNote"] = note,
+                        ["ProfileLink"] = $"{_appOptions.FrontendBaseUrl}{profilePath}"
+                    });
+
+                await _emailService.SendAsync(new EmailMessage
+                {
+                    To = user.Email!,
+                    Subject = "Please complete your NileChain documents",
+                    Body = html,
+                    IsHtml = true
+                });
+            }
+            catch
+            {
+                Console.WriteLine("Request-info email failed");
+            }
+        }
+
+        private async Task RecordDecisionAsync(
+            Guid userId,
+            Guid adminUserId,
+            KybDecisionAction action,
+            string reason,
+            int trustScore)
+        {
+            if (_kybDecisions is null)
+                return;
+
+            await _kybDecisions.AddAsync(new KybDecision
+            {
+                DecisionId = Guid.NewGuid(),
+                UserId = userId,
+                AdminUserId = adminUserId,
+                Action = action,
+                Reason = string.IsNullOrWhiteSpace(reason) ? "—" : reason.Trim(),
+                TrustScoreAtDecision = trustScore,
+                CreatedAt = DateTime.UtcNow,
+                User = null,
+                AdminUser = null
+            });
+        }
+
+        private static UserListItem MapUserListItem(
+            ApplicationUser user,
+            string roleName,
+            bool isBlocked,
+            LatestKybReportRow? lastReport,
+            Subscription? latestPlan = null,
+            DateTime? utcNow = null)
+        {
+            var now = utcNow ?? DateTime.UtcNow;
+            var asFarm = string.Equals(roleName, "Farm", StringComparison.OrdinalIgnoreCase);
+            var asFactory = string.Equals(roleName, "Factory", StringComparison.OrdinalIgnoreCase);
+            string? planCode = null;
+            string? planStatus = null;
+            DateTime? periodEnd = null;
+            if (asFarm || asFactory)
+            {
+                var live = latestPlan is not null && latestPlan.IsLiveAt(now)
+                    && SubscriptionPlanCodes.IsPro(latestPlan.PlanCode);
+                planCode = live ? latestPlan!.PlanCode : SubscriptionPlanCodes.FreeForRole(asFarm);
+                planStatus = live ? latestPlan!.Status.ToString() : "Active";
+                periodEnd = live ? latestPlan!.PeriodEnd : null;
+            }
+
+            return new()
+            {
+                Id = user.Id,
+                Email = user.Email ?? "",
+                DisplayName = user.Farm?.Name ?? user.Factory?.Name ?? user.UserName,
+                Role = roleName,
+                IsVerified = user.IsVerified,
+                IsBlocked = isBlocked,
+                IsActive = user.IsActive,
+                CreatedAt = user.CreatedAt,
+                FarmId = user.Farm?.FarmId,
+                FactoryId = user.Factory?.FactoryId,
+                FarmName = user.Farm?.Name,
+                FactoryName = user.Factory?.Name,
+                KybReviewStatus = user.KybReviewStatus.ToString(),
+                KybAdminNote = user.KybAdminNote,
+                LastTrustScore = lastReport?.TrustScore,
+                LastRecommendation = lastReport?.Recommendation,
+                PlanCode = planCode,
+                SubscriptionStatus = planStatus,
+                SubscriptionPeriodEnd = periodEnd
+            };
+        }
+
+        private static VerifyUserResult MapReport(LatestKybReportRow row)
+        {
+            var comparison = new List<KybComparisonItemDto>();
+            try
+            {
+                comparison = JsonSerializer.Deserialize<List<KybComparisonItemDto>>(
+                    row.BreakdownJson,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            }
+            catch
+            {
+                comparison = [];
+            }
+
+            var missing = comparison.Where(c => !c.Provided).Select(c => c.KybKind).ToList();
+            return new VerifyUserResult
+            {
+                Verified = false,
+                KybIncomplete = missing.Count > 0,
+                MissingKybKinds = missing,
+                TrustScore = row.TrustScore,
+                OverallSummary = row.OverallSummary,
+                Recommendation = row.Recommendation,
+                Comparison = comparison
+            };
         }
 
         public async Task<Result<RagUploadResult>> UploadRagDocumentAsync(

@@ -9,6 +9,7 @@ namespace NileChain.API.Controllers;
 [Route("api/certifications")]
 [ApiController]
 [Authorize]
+[NileChain.API.Filters.AllowUnverified]
 public class CertificationsController : ControllerBase
 {
     private readonly IRepository<Certification> _certificationRepository;

@@ -24,6 +24,18 @@ public class MatchResult
     public bool UsedGovernorateFallback { get; set; }
 
     /// <summary>
+    /// True when the farm is outside the factory's original GeoScope and only included
+    /// after an explicit one-ring expansion opt-in.
+    /// </summary>
+    public bool IsGeographicExpansion { get; set; }
+
+    /// <summary>
+    /// True when the farm's governorate is one the factory preferred, which is what earns
+    /// the location points. Persisted into the eligibility snapshot to explain the score later.
+    /// </summary>
+    public bool LocationMatched { get; set; }
+
+    /// <summary>
     /// Full risk breakdown for this farm (additive; existing score fields unchanged).
     /// </summary>
     public RiskReport? RiskReport { get; set; }

@@ -15,6 +15,11 @@ public class FarmDocumentConfiguration : IEntityTypeConfiguration<FarmDocument>
         builder.Property(d => d.FileUrl).HasMaxLength(2048).IsRequired();
         builder.Property(d => d.FileType).HasMaxLength(100).IsRequired();
         builder.Property(d => d.PublicId).HasMaxLength(500).IsRequired();
+        builder.Property(d => d.KybKind)
+            .HasConversion<string>()
+            .HasMaxLength(40)
+            .HasDefaultValue(NileChain.Domain.Enums.KybKind.Other)
+            .IsRequired();
 
         builder.HasOne(d => d.Farm)
             .WithMany(f => f.FarmDocuments)

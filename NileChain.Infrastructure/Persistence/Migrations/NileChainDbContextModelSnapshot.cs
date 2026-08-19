@@ -149,16 +149,43 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<int?>("CompletionTokens")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("DurationMs")
+                        .HasColumnType("int");
+
                     b.Property<string>("ErrorCode")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<decimal?>("EstimatedCostUsd")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("decimal(18,6)");
+
                     b.Property<Guid?>("FactoryId")
                         .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("LlmCalls")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("LlmLatencyMs")
+                        .HasColumnType("int");
+
+                    b.Property<string>("LlmModels")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<string>("LlmProviders")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("OrchestratorMode")
                         .HasMaxLength(80)
                         .HasColumnType("nvarchar(80)");
+
+                    b.Property<int?>("PromptTokens")
+                        .HasColumnType("int");
 
                     b.Property<Guid>("RequestId")
                         .HasColumnType("uniqueidentifier");
@@ -198,6 +225,65 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("Certification", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ChannelMessage", b =>
+                {
+                    b.Property<Guid>("ChannelMessageId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FailReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<Guid?>("RelatedEntityId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RelatedEntityType")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("TemplateKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ToPhone")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("ChannelMessageId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("TemplateKey");
+
+                    b.ToTable("ChannelMessages", (string)null);
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.ComparisonReport", b =>
@@ -346,6 +432,48 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("ContractAttachment", (string)null);
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractAuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("nvarchar(45)");
+
+                    b.Property<string>("StateHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("Timestamp")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ActorId");
+
+                    b.HasIndex("ContractId", "Timestamp")
+                        .HasDatabaseName("IX_ContractAuditLog_ContractId_Timestamp");
+
+                    b.ToTable("ContractAuditLog", null, t =>
+                        {
+                            t.HasComment("Append-only. Application must not UPDATE or DELETE rows.");
+                        });
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.ContractIntegrityAnchor", b =>
                 {
                     b.Property<Guid>("AnchorId")
@@ -436,6 +564,54 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("IX_ContractRevision_ContractId_CreatedAt");
 
                     b.ToTable("ContractRevision", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractSignatureRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ConsentText")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ContractHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("IpAddress")
+                        .HasMaxLength(45)
+                        .HasColumnType("nvarchar(45)");
+
+                    b.Property<string>("SignatureToken")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("SignedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SignerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SignerId");
+
+                    b.HasIndex("ContractId", "SignerId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ContractSignatureRecord_ContractId_SignerId");
+
+                    b.ToTable("ContractSignatureRecord", (string)null);
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.CropRequest", b =>
@@ -562,6 +738,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("ReviewedByUserId")
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<DateTime?>("SlaDueAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(40)
@@ -587,6 +766,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.HasIndex("ResolvedByUserId");
 
                     b.HasIndex("ReviewedByUserId");
+
+                    b.HasIndex("SlaDueAt")
+                        .HasDatabaseName("IX_Dispute_SlaDueAt");
 
                     b.HasIndex("Status", "Type")
                         .HasDatabaseName("IX_Dispute_Status_Type");
@@ -839,6 +1021,55 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("Factory", (string)null);
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.FactoryDocument", b =>
+                {
+                    b.Property<Guid>("FactoryDocumentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("FactoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<long>("FileSize")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("FileType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("FileUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("KybKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasDefaultValue("Other");
+
+                    b.Property<string>("PublicId")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<DateTime>("UploadedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("FactoryDocumentId");
+
+                    b.HasIndex("FactoryId");
+
+                    b.ToTable("FactoryDocument", (string)null);
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.Farm", b =>
                 {
                     b.Property<Guid>("FarmId")
@@ -936,6 +1167,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("ExpiresAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<Guid?>("GrantedByAdminUserId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTime>("IssuedAt")
                         .HasColumnType("datetime2");
 
@@ -1016,6 +1250,13 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(2048)
                         .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("KybKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasDefaultValue("Other");
 
                     b.Property<string>("PublicId")
                         .IsRequired()
@@ -1107,6 +1348,11 @@ namespace NileChain.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("IsExcludedByFactory")
                         .HasColumnType("bit");
+
+                    b.Property<bool>("IsGeographicExpansion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<decimal?>("MatchScore")
                         .HasPrecision(5, 2)
@@ -1238,13 +1484,13 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<DateTime?>("VoidedAt")
                         .HasColumnType("datetime2");
 
-                    b.Property<decimal?>("WeighedQuantityTons")
-                        .HasPrecision(18, 3)
-                        .HasColumnType("decimal(18,3)");
-
                     b.Property<string>("WeighbridgeTicketUrl")
                         .HasMaxLength(2000)
                         .HasColumnType("nvarchar(2000)");
+
+                    b.Property<decimal?>("WeighedQuantityTons")
+                        .HasPrecision(18, 3)
+                        .HasColumnType("decimal(18,3)");
 
                     b.HasKey("FulfillmentId");
 
@@ -1295,6 +1541,80 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("FulfillmentEvent", (string)null);
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.KybDecision", b =>
+                {
+                    b.Property<Guid>("DecisionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<Guid>("AdminUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("TrustScoreAtDecision")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("DecisionId");
+
+                    b.HasIndex("AdminUserId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("KybDecision", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.KybVerificationReport", b =>
+                {
+                    b.Property<Guid>("ReportId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BreakdownJson")
+                        .IsRequired()
+                        .HasMaxLength(100000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("OverallSummary")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Recommendation")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<int>("TrustScore")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("ReportId");
+
+                    b.ToTable("KybVerificationReport", (string)null);
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.MarketPrice", b =>
                 {
                     b.Property<Guid>("PriceId")
@@ -1324,6 +1644,50 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.HasIndex("CropTypeId");
 
                     b.ToTable("MarketPrice", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.MatchNegotiationRound", b =>
+                {
+                    b.Property<Guid>("RoundId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DeliveryDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Grade")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<Guid>("MatchId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("OfferedBy")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<decimal?>("PricePerTon")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<decimal?>("QuantityTons")
+                        .HasPrecision(10, 2)
+                        .HasColumnType("decimal(10,2)");
+
+                    b.HasKey("RoundId");
+
+                    b.HasIndex("MatchId", "CreatedAt")
+                        .HasDatabaseName("IX_MatchNegotiationRound_MatchId_CreatedAt");
+
+                    b.ToTable("MatchNegotiationRound", (string)null);
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.Message", b =>
@@ -1378,19 +1742,28 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<Guid?>("RelatedEntityId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RelatedEntityType")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
 
                     b.Property<string>("Type")
-                        .HasMaxLength(20)
-                        .HasColumnType("nvarchar(20)");
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("NotificationId");
+
+                    b.HasIndex("RelatedEntityId");
 
                     b.HasIndex("UserId");
 
@@ -1528,6 +1901,120 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.ToTable("RiskAssessmentReport", (string)null);
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.SigningOtp", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ContractId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsUsed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("OtpHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ContractId");
+
+                    b.HasIndex("UserId", "ContractId", "CreatedAt")
+                        .HasDatabaseName("IX_SigningOtp_UserId_ContractId_CreatedAt");
+
+                    b.ToTable("SigningOtp", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.Subscription", b =>
+                {
+                    b.Property<Guid>("SubscriptionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("PeriodEnd")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("PeriodStart")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("PlanCode")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("SubscriptionId");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("UserId", "Status", "PeriodEnd");
+
+                    b.ToTable("Subscription", (string)null);
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.SubscriptionUsage", b =>
+                {
+                    b.Property<int>("Count")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Metric")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<DateTime>("PeriodStart")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("UsageId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("UsageId");
+
+                    b.HasIndex("UserId", "PeriodStart", "Metric")
+                        .IsUnique();
+
+                    b.ToTable("SubscriptionUsage", (string)null);
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.SupplyRequest", b =>
                 {
                     b.Property<Guid>("RequestId")
@@ -1547,6 +2034,11 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<bool>("FactoryApprovedOneRingExpansion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<Guid>("FactoryId")
                         .HasColumnType("uniqueidentifier");
@@ -1570,6 +2062,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<decimal>("QuantityTons")
                         .HasPrecision(10, 2)
                         .HasColumnType("decimal(10,2)");
+
+                    b.Property<int?>("ShortlistTakeLimit")
+                        .HasColumnType("int");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -1734,6 +2229,9 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("rowversion");
+
+                    b.Property<DateTime?>("SubscriptionPaidThroughUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("datetime2");
@@ -1970,6 +2468,23 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Property<bool>("IsVerified")
                         .HasColumnType("bit");
 
+                    b.Property<string>("KybAdminNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("KybReviewStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasDefaultValue("Pending");
+
+                    b.Property<DateTime?>("KybReviewedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("KybReviewedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("bit");
 
@@ -2132,6 +2647,25 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Contract");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractAuditLog", b =>
+                {
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "Actor")
+                        .WithMany()
+                        .HasForeignKey("ActorId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany("AuditLogs")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Actor");
+
+                    b.Navigation("Contract");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.ContractIntegrityAnchor", b =>
                 {
                     b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
@@ -2152,6 +2686,25 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Contract");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.ContractSignatureRecord", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany("SignatureRecords")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "Signer")
+                        .WithMany()
+                        .HasForeignKey("SignerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+
+                    b.Navigation("Signer");
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.CropRequest", b =>
@@ -2270,6 +2823,17 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.FactoryDocument", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Factory", "Factory")
+                        .WithMany("FactoryDocuments")
+                        .HasForeignKey("FactoryId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Factory");
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.Farm", b =>
@@ -2392,6 +2956,25 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Fulfillment");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.KybDecision", b =>
+                {
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "AdminUser")
+                        .WithMany()
+                        .HasForeignKey("AdminUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AdminUser");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.MarketPrice", b =>
                 {
                     b.HasOne("NileChain.Domain.Entities.CropType", "CropType")
@@ -2401,6 +2984,17 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("CropType");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.MatchNegotiationRound", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.FarmMatch", "FarmMatch")
+                        .WithMany("NegotiationRounds")
+                        .HasForeignKey("MatchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("FarmMatch");
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.Message", b =>
@@ -2501,6 +3095,47 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Farm");
                 });
 
+            modelBuilder.Entity("NileChain.Domain.Entities.SigningOtp", b =>
+                {
+                    b.HasOne("NileChain.Domain.Entities.Contract", "Contract")
+                        .WithMany("SigningOtps")
+                        .HasForeignKey("ContractId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Contract");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.Subscription", b =>
+                {
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("NileChain.Domain.Entities.SubscriptionUsage", b =>
+                {
+                    b.HasOne("NileChain.Domain.Identity.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("NileChain.Domain.Entities.SupplyRequest", b =>
                 {
                     b.HasOne("NileChain.Domain.Entities.CropType", "CropType")
@@ -2592,15 +3227,21 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                 {
                     b.Navigation("Attachments");
 
+                    b.Navigation("AuditLogs");
+
                     b.Navigation("Disputes");
 
                     b.Navigation("Fulfillment");
 
                     b.Navigation("IntegrityAnchors");
 
+                    b.Navigation("Reviews");
+
                     b.Navigation("Revisions");
 
-                    b.Navigation("Reviews");
+                    b.Navigation("SignatureRecords");
+
+                    b.Navigation("SigningOtps");
 
                     b.Navigation("Transactions");
                 });
@@ -2623,6 +3264,8 @@ namespace NileChain.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NileChain.Domain.Entities.Factory", b =>
                 {
+                    b.Navigation("FactoryDocuments");
+
                     b.Navigation("SupplyRequests");
                 });
 
@@ -2646,6 +3289,8 @@ namespace NileChain.Infrastructure.Persistence.Migrations
                     b.Navigation("Contract");
 
                     b.Navigation("Messages");
+
+                    b.Navigation("NegotiationRounds");
                 });
 
             modelBuilder.Entity("NileChain.Domain.Entities.Fulfillment", b =>

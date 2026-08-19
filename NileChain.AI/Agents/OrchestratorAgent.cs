@@ -13,7 +13,9 @@ using NileChain.AI.Orchestration;
 using NileChain.AI.Plugins;
 using NileChain.AI.Resilience;
 using NileChain.AI.Sbg;
+using NileChain.AI.Telemetry;
 using NileChain.Application.Common;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -46,6 +48,8 @@ public class OrchestratorAgent
     private readonly IConfiguration _configuration;
     private readonly NileChainDbContext _context;
     private readonly ILogger<OrchestratorAgent> _logger;
+    private readonly LlmUsageLedger _usage;
+    private readonly LlmPricing _pricing;
 
     public OrchestratorAgent(
         MatchingAgent matchingAgent,
@@ -57,7 +61,9 @@ public class OrchestratorAgent
         SbgStudentChatClient sbgClient,
         IConfiguration configuration,
         NileChainDbContext context,
-        ILogger<OrchestratorAgent> logger)
+        ILogger<OrchestratorAgent> logger,
+        LlmUsageLedger usage,
+        LlmPricing pricing)
     {
         _matchingAgent = matchingAgent;
         _riskAgent = riskAgent;
@@ -69,6 +75,8 @@ public class OrchestratorAgent
         _configuration = configuration;
         _context = context;
         _logger = logger;
+        _usage = usage;
+        _pricing = pricing;
     }
 
     public async Task<AgentResponse> RunAsync(AgentRequest request)
@@ -159,6 +167,8 @@ public class OrchestratorAgent
             run.Success = false;
             run.ErrorCode = failed.ErrorCode;
             run.OrchestratorMode = failed.OrchestratorMode;
+            // A failed run still burned tokens; record what it cost before returning.
+            ApplyRunTelemetry(run);
             try
             {
                 await _context.SaveChangesAsync();
@@ -183,6 +193,7 @@ public class OrchestratorAgent
         run.ErrorCode = response.ErrorCode
             ?? (response.Success ? null : "AI.NoMatches");
         run.TruncatedCount = response.TruncatedCount;
+        ApplyRunTelemetry(run);
         run.OrchestratorMode = response.OrchestratorMode;
         try
         {
@@ -192,6 +203,25 @@ public class OrchestratorAgent
         {
             _logger.LogWarning(ex, "Failed to complete AgentRun {RunId}", run.RunId);
         }
+    }
+
+    private void ApplyRunTelemetry(AgentRun run)
+    {
+        var summary = _usage.Summarize(_pricing);
+
+        run.DurationMs = (int)Math.Round(
+            ((run.CompletedAt ?? DateTime.UtcNow) - run.StartedAt).TotalMilliseconds);
+
+        if (summary.Calls == 0)
+            return;
+
+        run.LlmCalls = summary.Calls;
+        run.LlmProviders = summary.Providers;
+        run.LlmModels = summary.Models;
+        run.LlmLatencyMs = (int)Math.Min(summary.LlmLatencyMs, int.MaxValue);
+        run.PromptTokens = summary.PromptTokens;
+        run.CompletionTokens = summary.CompletionTokens;
+        run.EstimatedCostUsd = summary.EstimatedCostUsd;
     }
 
     private static List<ToolCallTrailEntry> SanitizeTrail(List<ToolCallTrailEntry> trail) =>
@@ -459,6 +489,7 @@ public class OrchestratorAgent
             ContractIncomplete = state.ContractIncomplete,
             ContractValidationError = state.ContractValidationError,
             ToolCallTrail = state.Trail,
+            PeekHint = state.PeekHint,
             ErrorMessage = success
                 ? string.Empty
                 : (state.PartialReason ?? "No matching farms found")
@@ -491,7 +522,8 @@ public class OrchestratorAgent
                 TotalEligible = search.TotalEligible,
                 TruncatedCount = search.TruncatedCount,
                 OrchestratorMode = "DeterministicFallback",
-                ToolCallTrail = trail
+                ToolCallTrail = trail,
+                PeekHint = search.PeekHint
             };
         }
 
@@ -553,7 +585,8 @@ public class OrchestratorAgent
             SupersededCount = superseded,
             OrchestratorMode = "DeterministicFallback",
             RiskWarning = warning,
-            ToolCallTrail = trail
+            ToolCallTrail = trail,
+            PeekHint = search.PeekHint
         };
     }
 
@@ -566,7 +599,8 @@ public class OrchestratorAgent
                          out var unavailableReason,
                          out _,
                          out _,
-                         _sbgClient)
+                         _sbgClient,
+                         _usage)
                      ?? throw new InvalidOperationException(
                          unavailableReason
                          ?? "LLM is not configured (set SBG_BASE_URL + SBG_API_KEY, or OpenAI/Groq key).");
@@ -800,12 +834,12 @@ public class OrchestratorAgent
         foreach (var stale in staleMatches)
         {
             stale.Status = FarmMatchStatus.Expired;
-            NotifyMatchSuperseded(stale.Farm?.UserId);
+            NotifyMatchSuperseded(stale.Farm?.UserId, stale.MatchId);
             var factoryUserId = stale.SupplyRequest?.Factory?.UserId;
             if (factoryUserId is Guid fUid && fUid != Guid.Empty
                 && fUid != (stale.Farm?.UserId ?? Guid.Empty))
             {
-                NotifyMatchSuperseded(fUid);
+                NotifyMatchSuperseded(fUid, stale.MatchId);
             }
         }
 
@@ -869,7 +903,9 @@ public class OrchestratorAgent
                     IsVerified = farmSnap.IsVerified,
                     DeliveryPoint = requestTerms?.DeliveryPoint.ToString(),
                     FreightPayer = requestTerms?.FreightPayer.ToString(),
-                    TransitRisk = requestTerms?.TransitRisk.ToString()
+                    TransitRisk = requestTerms?.TransitRisk.ToString(),
+                    LocationMatched = match.LocationMatched,
+                    MatchScore = match.MatchScore
                 }.ToJson();
             }
 
@@ -884,6 +920,7 @@ public class OrchestratorAgent
 
                 existing.MatchScore = match.MatchScore;
                 existing.RiskScore = match.RiskScore;
+                existing.IsGeographicExpansion = match.IsGeographicExpansion;
                 if (string.IsNullOrWhiteSpace(existing.MatchedGovernorate))
                     existing.MatchedGovernorate = govSnapshot;
 
@@ -916,6 +953,7 @@ public class OrchestratorAgent
                 RiskScore = match.RiskScore,
                 MatchedGovernorate = govSnapshot,
                 EligibilitySnapshotJson = eligibilityJson,
+                IsGeographicExpansion = match.IsGeographicExpansion,
                 Status = FarmMatchStatus.Proposed,
                 CreatedAt = DateTime.UtcNow
             });
@@ -937,6 +975,7 @@ public class OrchestratorAgent
                 if (farm.UserId == Guid.Empty)
                     continue;
 
+                var matchId = matches.FirstOrDefault(m => m.FarmId == farm.FarmId)?.MatchId;
                 _context.Notifications.Add(new Notification
                 {
                     NotificationId = Guid.NewGuid(),
@@ -944,7 +983,22 @@ public class OrchestratorAgent
                     Title = "notifications.types.matchProposed.title",
                     Message = "notifications.types.matchProposed.body",
                     Type = "MatchProposed",
+                    RelatedEntityType = NotificationRelations.Match,
+                    RelatedEntityId = matchId is Guid mid && mid != Guid.Empty ? mid : null,
                     IsRead = false,
+                    CreatedAt = DateTime.UtcNow
+                });
+                _context.ChannelMessages.Add(new ChannelMessage
+                {
+                    ChannelMessageId = Guid.NewGuid(),
+                    Channel = "WhatsApp",
+                    ToPhone = "unknown",
+                    UserId = farm.UserId,
+                    TemplateKey = "MatchProposed",
+                    Body = "A factory proposed a supply match on NileChain.",
+                    Status = ChannelMessageStatus.Logged,
+                    RelatedEntityType = NotificationRelations.Match,
+                    RelatedEntityId = matchId is Guid mid2 && mid2 != Guid.Empty ? mid2 : null,
                     CreatedAt = DateTime.UtcNow
                 });
             }
@@ -974,7 +1028,7 @@ public class OrchestratorAgent
         return staleMatches.Count;
     }
 
-    private void NotifyMatchSuperseded(Guid? userId)
+    private void NotifyMatchSuperseded(Guid? userId, Guid matchId)
     {
         if (userId is not Guid uid || uid == Guid.Empty)
             return;
@@ -986,6 +1040,8 @@ public class OrchestratorAgent
             Title = "notifications.types.matchSuperseded.title",
             Message = "notifications.types.matchSuperseded.body",
             Type = "MatchSuperseded",
+            RelatedEntityType = NotificationRelations.Match,
+            RelatedEntityId = matchId == Guid.Empty ? null : matchId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         });

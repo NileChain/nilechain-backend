@@ -64,6 +64,23 @@ public class WalletRepository : IWalletRepository
             .Take(take)
             .ToListAsync();
 
+    public Task<WalletWithdrawal?> GetWithdrawalByIdAsync(Guid withdrawalId, bool tracking = true)
+    {
+        var q = _db.WalletWithdrawals.AsQueryable();
+        if (!tracking) q = q.AsNoTracking();
+        return q.FirstOrDefaultAsync(w => w.WithdrawalId == withdrawalId);
+    }
+
+    public async Task<IReadOnlyList<WalletWithdrawal>> ListWithdrawalsAsync(
+        WalletWithdrawalStatus? status,
+        int take = 100)
+    {
+        var q = _db.WalletWithdrawals.Include(w => w.Wallet).AsNoTracking().AsQueryable();
+        if (status.HasValue)
+            q = q.Where(w => w.Status == status.Value);
+        return await q.OrderBy(w => w.CreatedAt).Take(take).ToListAsync();
+    }
+
     public async Task<IReadOnlyList<WalletTopUp>> GetStalePendingTopUpsAsync(
         DateTime cutoffUtc,
         CancellationToken cancellationToken = default) =>

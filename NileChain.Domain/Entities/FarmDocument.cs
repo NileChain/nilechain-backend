@@ -1,3 +1,5 @@
+using NileChain.Domain.Enums;
+
 namespace NileChain.Domain.Entities;
 
 public class FarmDocument
@@ -10,6 +12,7 @@ public class FarmDocument
     public string FileType { get; set; } = default!;
     public string PublicId { get; set; } = default!;
     public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
+    public KybKind KybKind { get; set; } = KybKind.Other;
 
     public Farm Farm { get; set; } = default!;
 }

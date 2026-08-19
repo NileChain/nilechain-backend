@@ -51,7 +51,9 @@ public sealed class PaymobClient : IPaymobClient
             {
                 new
                 {
-                    name = "NileChain wallet top-up",
+                    name = string.IsNullOrWhiteSpace(request.ItemName)
+                        ? "NileChain wallet top-up"
+                        : request.ItemName,
                     amount = cents,
                     description = request.SpecialReference,
                     quantity = 1
@@ -74,7 +76,7 @@ public sealed class PaymobClient : IPaymobClient
             special_reference = request.SpecialReference,
             notification_url = request.NotificationUrl,
             redirection_url = request.RedirectionUrl,
-            extras = new { nilechain_topup = request.SpecialReference }
+            extras = BuildExtras(request)
         };
 
         using var msg = new HttpRequestMessage(HttpMethod.Post, "v1/intention/");
@@ -217,7 +219,9 @@ public sealed class PaymobClient : IPaymobClient
                 continue;
             // Ignore our own return markers — not part of Paymob HMAC.
             if (string.Equals(kv.Key, "topUpId", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(kv.Key, "hmac", StringComparison.OrdinalIgnoreCase))
+                || string.Equals(kv.Key, "hmac", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(kv.Key, "nilechain_escrow", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(kv.Key, "nilechain_topup", StringComparison.OrdinalIgnoreCase))
                 continue;
             d[kv.Key] = kv.Value?.Trim();
         }
@@ -262,6 +266,11 @@ public sealed class PaymobClient : IPaymobClient
         }
         return null;
     }
+
+    private static object BuildExtras(PaymobIntentionRequest request) =>
+        string.Equals(request.ExtraKind, "nilechain_escrow", StringComparison.OrdinalIgnoreCase)
+            ? new { nilechain_escrow = request.SpecialReference }
+            : new { nilechain_topup = request.SpecialReference };
 
     private static string Truncate(string s, int n) =>
         string.IsNullOrEmpty(s) ? string.Empty : (s.Length <= n ? s : s[..n] + "…");

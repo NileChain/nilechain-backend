@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NileChain.AI.Plugins;
 using NileChain.Application.Dtos.Farm;
+using NileChain.Domain.Common;
+using NileChain.Domain.Enums;
 using NileChain.Infrastructure.Persistence;
 
 namespace NileChain.API.Controllers;
@@ -26,22 +28,49 @@ public class FarmsController : ControllerBase
     }
 
     /// <summary>
-    /// Full risk factor breakdown for a farm (Profile, Certs, Contracts, Ratings).
-    /// Factories/Admins may view any farm. Farm users may only view their own farm.
-    /// </summary>
+    /// Full trust-factor breakdown for a farm (Profile, Certs, Contracts, Ratings).
+    /// Farm: own profile. Admin: any. Factory: active match/request or a published listing.
     [HttpGet("{farmId:guid}/risk-report")]
     public async Task<IActionResult> GetRiskReport(Guid farmId)
     {
-        if (User.IsInRole("Farm") && !User.IsInRole("Factory") && !User.IsInRole("Admin") && !User.IsInRole("SuperAdmin"))
-        {
-            var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (!Guid.TryParse(userIdValue, out var userId))
-                return Forbid();
+        var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdValue, out var userId))
+            return Forbid();
 
+        var isAdmin = User.IsInRole("Admin") || User.IsInRole("SuperAdmin");
+        var isFarm = User.IsInRole("Farm") && !User.IsInRole("Factory") && !isAdmin;
+        var isFactory = User.IsInRole("Factory") && !isAdmin;
+
+        if (isFarm)
+        {
             var owns = await _db.Farm.AsNoTracking()
                 .AnyAsync(f => f.FarmId == farmId && f.UserId == userId);
             if (!owns)
                 return Forbid();
+        }
+        else if (isFactory)
+        {
+            var factory = await _db.Factory.AsNoTracking()
+                .FirstOrDefaultAsync(f => f.UserId == userId);
+            if (factory is null)
+                return Forbid();
+
+            var hasActiveMatch = await _db.FarmMatches.AsNoTracking().AnyAsync(m =>
+                m.FarmId == farmId
+                && m.SupplyRequest.FactoryId == factory.FactoryId
+                && (m.Status == FarmMatchStatus.Proposed
+                    || m.Status == FarmMatchStatus.Countered
+                    || m.Status == FarmMatchStatus.Accepted));
+
+            var published = await _db.FarmCrops.AsNoTracking()
+                .AnyAsync(c => c.FarmId == farmId && c.IsPublished);
+
+            if (!FarmTrustVisibility.FactoryMayView(hasActiveMatch, published))
+                return Forbid();
+        }
+        else if (!isAdmin)
+        {
+            return Forbid();
         }
 
         var report = await _riskPlugin.CalculateRiskScore(farmId);
@@ -58,6 +87,31 @@ public class FarmsController : ControllerBase
     [Authorize(Roles = "Factory,Admin,SuperAdmin")]
     public async Task<IActionResult> GetPublicProfile(Guid farmId, CancellationToken ct)
     {
+        var userIdValue = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdValue, out var userId))
+            return Forbid();
+
+        var isAdmin = User.IsInRole("Admin") || User.IsInRole("SuperAdmin");
+        if (!isAdmin && User.IsInRole("Factory"))
+        {
+            var factory = await _db.Factory.AsNoTracking()
+                .FirstOrDefaultAsync(f => f.UserId == userId, ct);
+            if (factory is null)
+                return Forbid();
+
+            var hasActiveMatch = await _db.FarmMatches.AsNoTracking().AnyAsync(m =>
+                m.FarmId == farmId
+                && m.SupplyRequest.FactoryId == factory.FactoryId
+                && (m.Status == FarmMatchStatus.Proposed
+                    || m.Status == FarmMatchStatus.Countered
+                    || m.Status == FarmMatchStatus.Accepted), ct);
+
+            var published = await _db.FarmCrops.AsNoTracking()
+                .AnyAsync(c => c.FarmId == farmId && c.IsPublished, ct);
+
+            if (!FarmTrustVisibility.FactoryMayView(hasActiveMatch, published))
+                return Forbid();
+        }
         var farm = await _db.Farm
             .AsNoTracking()
             .Include(f => f.User)
@@ -100,6 +154,7 @@ public class FarmsController : ControllerBase
                 .ToList(),
             Certifications = farm.FarmCertifications
                 .Where(c => c.ExpiresAt is null || c.ExpiresAt > DateTime.UtcNow)
+                .Where(c => NileChain.Domain.Common.FarmCertificationRules.CountsTowardTrust(c, DateTime.UtcNow))
                 .Select(c => c.Certification.Name)
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .OrderBy(n => n)
@@ -149,11 +204,6 @@ public class FarmsController : ControllerBase
         return char.ToUpperInvariant(value[0]) + value[1..];
     }
 
-    private static string GetRiskLevelLabel(decimal? score) => score switch
-    {
-        >= 70 => "منخفض المخاطر",
-        >= 40 => "متوسط المخاطر",
-        null => "متوسط المخاطر",
-        _ => "عالي المخاطر",
-    };
+    private static string GetRiskLevelLabel(decimal? score) =>
+        NileChain.Domain.Common.FarmTrustLevelText.Arabic(score);
 }

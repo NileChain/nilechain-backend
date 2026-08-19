@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using NileChain.API.Options;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -112,6 +113,8 @@ public sealed class ContractMatchExpiryHostedService : BackgroundService
                     Title = "Match expired",
                     Message = "A proposed match expired after the review window closed.",
                     Type = "MatchExpired",
+                    RelatedEntityType = NotificationRelations.Match,
+                    RelatedEntityId = match.MatchId,
                     IsRead = false,
                     CreatedAt = utcNow
                 });
@@ -156,6 +159,8 @@ public sealed class ContractMatchExpiryHostedService : BackgroundService
                     Title = "Contract expired",
                     Message = "An unsigned contract was cancelled after the signature window closed.",
                     Type = "ContractExpired",
+                    RelatedEntityType = NotificationRelations.Contract,
+                    RelatedEntityId = contract.ContractId,
                     IsRead = false,
                     CreatedAt = utcNow
                 });
@@ -170,6 +175,8 @@ public sealed class ContractMatchExpiryHostedService : BackgroundService
                     Title = "Contract expired",
                     Message = "An unsigned contract was cancelled after the signature window closed.",
                     Type = "ContractExpired",
+                    RelatedEntityType = NotificationRelations.Contract,
+                    RelatedEntityId = contract.ContractId,
                     IsRead = false,
                     CreatedAt = utcNow
                 });

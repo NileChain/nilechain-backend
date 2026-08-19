@@ -3,6 +3,7 @@ using NileChain.Application.Common;
 using NileChain.Application.Dtos.Fulfillment;
 using NileChain.Application.Errors;
 using NileChain.Application.Interfaces;
+using NileChain.Application.Notifications;
 using NileChain.Domain.Common;
 using NileChain.Domain.Entities;
 using NileChain.Domain.Enums;
@@ -22,6 +23,7 @@ public sealed class FulfillmentService : IFulfillmentService
     private readonly IRepository<SupplyRequest> _supplyRequests;
     private readonly IMockEscrowPaymentService _escrowPayments;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IOutboundChannel? _outbound;
 
     public FulfillmentService(
         IFulfillmentRepository fulfillments,
@@ -33,7 +35,8 @@ public sealed class FulfillmentService : IFulfillmentService
         IRepository<Notification> notifications,
         IRepository<SupplyRequest> supplyRequests,
         IMockEscrowPaymentService escrowPayments,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        IOutboundChannel? outbound = null)
     {
         _fulfillments = fulfillments;
         _disputes = disputes;
@@ -45,6 +48,7 @@ public sealed class FulfillmentService : IFulfillmentService
         _supplyRequests = supplyRequests;
         _escrowPayments = escrowPayments;
         _unitOfWork = unitOfWork;
+        _outbound = outbound;
     }
 
     public async Task<Result<FulfillmentDto>> GetByContractAsync(Guid userId, Guid contractId, bool asFarm)
@@ -452,6 +456,20 @@ public sealed class FulfillmentService : IFulfillmentService
         await _unitOfWork.SaveChangesAsync();
         await tx.CommitAsync();
 
+        if (to == FulfillmentStatus.Shipped && _outbound is not null)
+        {
+            var farmUserId = contract.FarmMatch?.Farm?.UserId;
+            var factoryUserId = contract.FarmMatch?.SupplyRequest?.Factory?.UserId;
+            var target = asFarm ? factoryUserId : farmUserId;
+            await _outbound.EnqueueWhatsAppAsync(
+                target,
+                null,
+                ChannelTemplates.Shipped,
+                "Shipment marked for your NileChain supply contract.",
+                NotificationRelations.Contract,
+                contract.ContractId);
+        }
+
         var updated = await _fulfillments.GetByContractIdAsync(contractId);
         return Result<FulfillmentDto>.Success(Map(updated!));
     }
@@ -513,6 +531,8 @@ public sealed class FulfillmentService : IFulfillmentService
             Title = title,
             Message = $"Fulfillment status is now {to} for your supply contract.",
             Type = type,
+            RelatedEntityType = NotificationRelations.Contract,
+            RelatedEntityId = contract.ContractId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
         });

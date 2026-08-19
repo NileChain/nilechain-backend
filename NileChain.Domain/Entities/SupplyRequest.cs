@@ -29,6 +29,15 @@ public class SupplyRequest
     /// </summary>
     public string? IdempotencyKey { get; set; }
 
+    /// <summary>
+    /// Factory explicitly opted into one-ring geographic expansion (Exact→Nearby or Nearby+25km).
+    /// Never set by the LLM.
+    /// </summary>
+    public bool FactoryApprovedOneRingExpansion { get; set; }
+
+    /// <summary>Shortlist cap for matching. Null = default (5). Max 15 when factory asks to show more.</summary>
+    public int? ShortlistTakeLimit { get; set; }
+
     public Factory Factory { get; set; } = default!;
     public CropType CropType { get; set; } = default!;
     public ICollection<FarmMatch> FarmMatches { get; set; } = new List<FarmMatch>();

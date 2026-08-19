@@ -34,6 +34,12 @@ public class SupplyRequestConfiguration : IEntityTypeConfiguration<SupplyRequest
         builder.Property(r => r.IdempotencyKey)
             .HasMaxLength(128);
 
+        builder.Property(r => r.FactoryApprovedOneRingExpansion)
+            .IsRequired()
+            .HasDefaultValue(false);
+
+        builder.Property(r => r.ShortlistTakeLimit);
+
         builder.HasIndex(r => new { r.FactoryId, r.IdempotencyKey })
             .IsUnique()
             .HasFilter("[IdempotencyKey] IS NOT NULL");

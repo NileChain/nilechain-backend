@@ -38,6 +38,9 @@ public class DisputeConfiguration : IEntityTypeConfiguration<Dispute>
 
         builder.Property(d => d.AdminNote).HasMaxLength(2000);
 
+        builder.HasIndex(d => d.SlaDueAt)
+            .HasDatabaseName("IX_Dispute_SlaDueAt");
+
         builder.HasIndex(d => d.ContractId)
             .HasDatabaseName("IX_Dispute_ContractId");
 

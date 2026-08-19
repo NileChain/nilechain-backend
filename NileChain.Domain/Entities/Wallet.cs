@@ -18,6 +18,9 @@ public class Wallet
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
+    /// <summary>Factory SaaS: UTC instant until which the $30/month plan is paid.</summary>
+    public DateTime? SubscriptionPaidThroughUtc { get; set; }
+
     public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 
     public ICollection<WalletLedgerEntry> Ledger { get; set; } = new List<WalletLedgerEntry>();

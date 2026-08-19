@@ -29,7 +29,9 @@ namespace NileChain.Infrastructure.Authentication
 
                 new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
                 new(JwtRegisteredClaimNames.Email, user.Email!),
-                new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+                new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                // Needed on full-page loads (Paymob return) before /me hydrates.
+                new("is_verified", user.IsVerified ? "true" : "false")
             };
 
             foreach (var role in roles)

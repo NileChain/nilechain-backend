@@ -76,7 +76,44 @@ public class WalletSubscriptionTests
         Assert.Null(wallet.SubscriptionPaidThroughUtc);
     }
 
-    private static WalletService CreateWalletService(NileChainDbContext db) =>
+    [Fact]
+    public async Task StartTopUp_WithoutPaymobKeys_UsesSimulatorWhenAllowed()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var seeded = await SeedFactoryWalletAsync(harness.Db, available: 0m);
+        var wallets = CreateWalletService(
+            harness.Db,
+            new PaymobOptions { Enabled = true, AllowLocalSimulator = true });
+
+        var session = await wallets.StartTopUpAsync(
+            seeded.FactoryUserId, asFarm: false, amountEgp: 500, null, null);
+        Assert.True(session.IsSuccess);
+        Assert.Equal("Simulator", session.Value!.Mode);
+
+        var credited = await wallets.CompleteSimulatorTopUpAsync(
+            seeded.FactoryUserId, asFarm: false, session.Value.TopUpId);
+        Assert.True(credited.IsSuccess);
+        Assert.Equal(500m, credited.Value!.AvailableBalanceEgp);
+    }
+
+    [Fact]
+    public async Task StartTopUp_WithoutPaymobKeys_FailsWhenSimulatorDisabled()
+    {
+        await using var harness = await SqliteHarness.CreateAsync();
+        var seeded = await SeedFactoryWalletAsync(harness.Db, available: 0m);
+        var wallets = CreateWalletService(
+            harness.Db,
+            new PaymobOptions { Enabled = true, AllowLocalSimulator = false });
+
+        var session = await wallets.StartTopUpAsync(
+            seeded.FactoryUserId, asFarm: false, amountEgp: 500, null, null);
+        Assert.True(session.IsFailure);
+        Assert.Equal(WalletErrors.PaymobNotConfigured.Code, session.Error!.Code);
+    }
+
+    private static WalletService CreateWalletService(
+        NileChainDbContext db,
+        PaymobOptions? paymob = null) =>
         new(
             new WalletRepository(db),
             new FarmRepository(db),
@@ -84,7 +121,7 @@ public class WalletSubscriptionTests
             new UnitOfWork(db),
             new NoopPaymob(),
             Options.Create(new MockPaymentOptions()),
-            Options.Create(new PaymobOptions()),
+            Options.Create(paymob ?? new PaymobOptions()),
             NullLogger<WalletService>.Instance);
 
     private static async Task<(Guid FactoryId, Guid FactoryUserId)> SeedFactoryWalletAsync(

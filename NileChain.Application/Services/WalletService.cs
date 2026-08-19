@@ -209,6 +209,12 @@ public sealed class WalletService : IWalletService
         if (!_paymobOptions.AllowLocalSimulator)
             return Result<WalletTopUpSessionDto>.Failure(WalletErrors.PaymobNotConfigured);
 
+        if (_paymobOptions.Enabled && !_paymob.IsConfigured)
+        {
+            _logger.LogWarning(
+                "Paymob is enabled but keys/integration id are missing — using local wallet simulator.");
+        }
+
         topUp.Status = WalletTopUpStatus.Pending;
         topUp.CheckoutUrl = null;
         await _wallets.AddTopUpAsync(topUp);
